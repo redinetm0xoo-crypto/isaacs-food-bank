@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Food Bank Manager – Isaac's Food Bank</title>
+<meta name="theme-color" content="#227040">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=1.0">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img src="https://teamisaac.org.uk/assets/foi-logo.webp" alt="Friends of Isaac's Food Bank" class="logo" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'logo-text',textContent:'Friends of Isaac’s Food Bank'}))">
+    <div class="title"><b>Food Bank Manager</b><small id="who"></small></div>
+  </div>
+  <div id="conn" class="conn" title="Connection">…</div>
+</header>
+<nav class="tabs" id="tabs">
+  <button data-tab="stock" class="on">Stock</button>
+  <button data-tab="in">Book In</button>
+  <button data-tab="transfer">Transfer</button>
+  <button data-tab="take">Stock Take</button>
+  <button data-tab="out">Book Out</button>
+  <button data-tab="history">History</button>
+  <button data-tab="setup">Setup</button>
+</nav>
+<main id="main">
+  <section id="tab-stock" class="tab on"></section>
+  <section id="tab-in" class="tab"></section>
+  <section id="tab-transfer" class="tab"></section>
+  <section id="tab-take" class="tab"></section>
+  <section id="tab-out" class="tab"></section>
+  <section id="tab-history" class="tab"></section>
+  <section id="tab-setup" class="tab"></section>
+</main>
+<footer class="foot">
+  <button id="btnSuggest" class="link">Suggest a feature</button> ·
+  <button id="btnVersions" class="link">Version history</button>
+  <div class="small">Friends of Isaac's Food Bank CIC · Food Bank Manager v<span id="ver"></span></div>
+</footer>
+<div id="modal" class="modal hidden"><div class="box"><button class="x" id="modalX" aria-label="Close">×</button><div id="modalBody"></div></div></div>
+<div id="toast" class="toast hidden"></div>
+<script type="module" src="app.js?v=1.0"></script>
+</body>
+</html>
