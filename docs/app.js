@@ -564,7 +564,8 @@ function renderBank(force) {
   const cards = lists.map(l => {
     let c = box.querySelector(`.paper[data-id="${l.id}"]`);
     const typing = c && c.contains(document.activeElement) && /INPUT|SELECT/.test(document.activeElement.tagName);
-    const busy = c && (typing || LS.timers[l.id] || LS.saving[l.id]);
+    // keep a card the user is typing in – unless its status changed (e.g. just submitted or decided by Simon)
+    const busy = c && c.dataset.status === l.status && (typing || LS.timers[l.id] || LS.saving[l.id]);
     if (!busy) { const n = listCard(listOf(l.id)); if (c) c.replaceWith(n); c = n; }
     return c;
   });
@@ -585,6 +586,7 @@ function listCard(l) {
   const c = document.createElement('div');
   c.className = `paper ${l.donation ? 'don' : ''} ${l.status !== 'draft' ? 'done' : ''}`;
   c.dataset.id = l.id;
+  c.dataset.status = l.status;
   const edit = l.status === 'draft';
   const title = l.donation ? 'Donation' : 'Shopping list';
   const head = `<h4>${title}<span class="status ${l.status}">${STATUS[l.status] || l.status}</span></h4>
@@ -681,11 +683,13 @@ function renderRequests() {
   const pending = S.lists.filter(l => l.status === 'submitted').sort((a, b) => tsMs(a.submittedAt) - tsMs(b.submittedAt));
   $('#reqCount').textContent = pending.length || '';
   if (!S.ready.locs || !S.ready.stock) return;
-  if (el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;   // don't wipe what Simon is typing
+  // don't wipe what Simon is typing – unless that request has just been decided
+  const typingIn = el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' ? document.activeElement.closest('.req')?.dataset.id : null;
+  if (typingIn && pending.some(l => l.id === typingIn)) { el.dataset.stale = '1'; return; }
   const done = S.lists.filter(l => l.status === 'accepted' || l.status === 'rejected').sort((a, b) => tsMs(b.decidedAt) - tsMs(a.decidedAt)).slice(0, 15);
   el.innerHTML = `<h2>Requests</h2><p class="muted">Shopping lists and donations sent by the food banks. Check the quantities (change them if you can't send everything), then Accept – that books the stock straight away. Purple = direct donation.</p>
     ${pending.map(l => reqCard(l)).join('') || '<div class="card muted">No requests waiting.</div>'}
-    ${done.length ? `<h3>Recently decided</h3><div class="card">${done.map(l => `<div class="hist"><div class="h1"><b>${fmtTs(l.decidedAt)}</b><span class="status ${l.status}">${STATUS[l.status]}</span><span>${l.donation ? 'Donation' : esc(l.from) + ' →'} ${esc(locLabel(l.to))}</span></div><div class="small muted">${esc(l.by)} · ${(l.acceptedLines || l.lines).length} items${l.reason ? ' · ' + esc(l.reason) : ''}</div></div>`).join('')}</div>` : ''}`;
+    ${done.length ? `<h3>Recently decided</h3><div class="card">${done.map(l => `<div class="hist"><div class="h1"><b>${fmtTs(l.decidedAt)}</b><span class="status ${l.status}">${STATUS[l.status]}</span><span>${l.donation ? 'Donation' : esc(l.from) + ' →'} ${esc(locLabel(l.to))}</span></div><div class="small muted">${esc(l.by)} · ${(l.acceptedLines || l.lines).length} item${(l.acceptedLines || l.lines).length === 1 ? '' : 's'}${l.reason ? ' · ' + esc(l.reason) : ''}</div></div>`).join('')}</div>` : ''}`;
   el.querySelectorAll('.req').forEach(card => {
     const l = S.lists.find(x => x.id === card.dataset.id);
     $('.acc', card).onclick = () => acceptRequest(l, card);
