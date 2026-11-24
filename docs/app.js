@@ -19,7 +19,7 @@ const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
 function toast(msg, ms = 2600) { const t = $('#toast'); t.textContent = msg; t.classList.remove('hidden'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.add('hidden'), ms); }
 let modalLocked = false;
 function modal(html, { locked = false } = {}) { modalLocked = locked; $('#modalX').hidden = locked; $('#modalBody').innerHTML = html; $('#modal').classList.remove('hidden'); return $('#modalBody'); }
-function closeModal() { modalLocked = false; $('#modal').classList.add('hidden'); }
+function closeModal() { modalLocked = false; $('#modal').classList.add('hidden'); $('#modalBody').innerHTML = ''; }
 $('#modalX').onclick = closeModal;
 $('#modal').addEventListener('click', e => { if (e.target.id === 'modal' && !modalLocked) closeModal(); });
 
@@ -97,6 +97,9 @@ function applyStock(b, lines, sign) {
   }
 }
 async function voidMovement(id, data) {
+  // check it hasn't already been undone (the rules refuse a second undo too)
+  const cur = await getDoc(doc(db, 'movements', id));
+  if (cur.data()?.voided) throw new Error('this booking has already been undone');
   const b = writeBatch(db);
   b.set(doc(db, 'movements', id), { voided: true, voidedBy: S.name || '', voidedAt: serverTimestamp() }, { merge: true });
   applyStock(b, data.lines, -1);
@@ -483,7 +486,9 @@ function movementModal(d) {
   };
   if ($('#mUndo', m)) $('#mUndo', m).onclick = async () => {
     if (!confirmBox('Undo this booking? The stock goes back to how it was before it. The booking stays in History, crossed out.')) return;
-    try { await voidMovement(d.id, d); d.voided = true; d.voidedBy = S.name; toast('Booking undone'); closeModal(); drawHistory(); } catch (e) { toast('Not undone: ' + e.message, 5000); }
+    if (d.voided) return;
+    $('#mUndo', m).disabled = true;
+    try { await voidMovement(d.id, d); d.voided = true; d.voidedBy = S.name; toast('Booking undone'); closeModal(); drawHistory(); } catch (e) { toast('Not undone: ' + e.message, 5000); $('#mUndo', m).disabled = false; }
   };
 }
 
