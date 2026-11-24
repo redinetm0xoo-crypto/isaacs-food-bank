@@ -211,7 +211,7 @@ function onUsers() {
   if ($('#puLoading')) return pickUser();   // the name list was still loading
   if (!S.name) return;
   const u = userRec(S.name);
-  if (!u || u.active === false) { if (!$('#puName')) pickUser(); return; }   // taken off the list by Simon
+  if (!u || u.active === false || isSimonUser(u)) { if (!$('#puName')) pickUser(); return; }   // not on Simon's list (or taken off it)
   // Simon changed this person's default food bank – use the new one
   if (u.bank && u.bank !== S.bankDef) { S.bank = u.bank; S.bankDef = u.bank; localStorage.setItem('fbm.bank', S.bank); localStorage.setItem('fbm.bankDef', S.bankDef); applyView(); renderBank(true); }
 }
@@ -471,11 +471,11 @@ async function submitTake(loc) {
 function renderMyTakes() {
   const box = $('#tkMine'); if (!box) return;
   if (S.role !== 'mgr') { box.innerHTML = ''; return; }
-  const mine = S.lists.filter(l => l.kind === 'stocktake' && (l.uid === uid || l.by === S.name)).sort((a, b) => tsMs(b.submittedAt) - tsMs(a.submittedAt)).slice(0, 10);
+  const mine = S.lists.filter(l => l.kind === 'stocktake' && sentByMe(l)).sort((a, b) => tsMs(b.submittedAt) - tsMs(a.submittedAt)).slice(0, 10);
   box.innerHTML = mine.length ? `<h3>Your stock takes</h3><div class="card">${mine.map(l => `<div class="hist ${isRej(l) ? 'rejrow' : ''}"><div class="h1"><b>${fmtTs(l.submittedAt)}</b><span class="status ${l.status}">${STATUS[l.status]}</span><span>${esc(locLabel(l.loc))}</span></div><div class="small muted">${l.lines.length} item${l.lines.length === 1 ? '' : 's'} counted${l.reason ? ' · ' + esc(l.reason) : ''}${l.redoneAs ? ' · counted again' : ''}</div></div>`).join('')}</div>` : '';
   // stock takes Simon didn't accept: shown at the top of the tab until counted again or removed
   const rb = $('#tkRej'); if (!rb) return;
-  const rej = S.lists.filter(l => isRej(l) && mineTake(l)).sort((a, b) => tsMs(b.decidedAt) - tsMs(a.decidedAt));
+  const rej = S.lists.filter(l => isRej(l) && l.kind === 'stocktake' && sentByMe(l)).sort((a, b) => tsMs(b.decidedAt) - tsMs(a.decidedAt));
   rb.innerHTML = rej.map(l => `<div class="card rejcard" data-id="${l.id}"><div class="h1"><b>Stock take not accepted</b> · ${esc(locLabel(l.loc))} · counted ${l.date ? fmtDate(l.date) : fmtTs(l.submittedAt)}${l.by ? ' by ' + esc(l.by) : ''}</div>
     <div class="rejnote"><b>Simon's note${l.decidedAt ? ' (' + fmtTs(l.decidedAt) + ')' : ''}:</b> ${esc(l.reason || 'no note')}</div>
     <details><summary class="small">Your counts (${l.lines.length} item${l.lines.length === 1 ? '' : 's'})</summary><table>${l.lines.map(x => `<tr><td>${esc(x.i)}</td><td>${x.q}</td></tr>`).join('')}</table></details>
@@ -956,8 +956,10 @@ const listOf = id => LS.local[id] || S.lists.find(l => l.id === id);
 // v1.3: a request Simon didn't accept goes back to whoever sent it (and shows for their food bank)
 // until it is changed and sent again, or they press "OK, remove"
 const isRej = l => l.status === 'rejected' && !l.ack;
-const mineList = l => l.kind !== 'stocktake' && (l.to === S.bank || l.uid === uid || (S.name && l.by === S.name));
-const mineTake = l => l.kind === 'stocktake' && (l.loc === S.bank || l.uid === uid || (S.name && l.by === S.name));
+// (by name, not by device – several people can share one tablet)
+const mineList = l => l.kind !== 'stocktake' && (l.to === S.bank || (S.name && l.by === S.name));
+const mineTake = l => l.kind === 'stocktake' && (l.loc === S.bank || (S.name && l.by === S.name));
+const sentByMe = l => !!S.name && l.by === S.name;
 function myLists() {
   const order = { draft: 1, submitted: 2, accepted: 3, rejected: 3 };
   return S.lists.filter(l => mineList(l) && (S.showDone || l.status === 'draft' || l.status === 'submitted' || isRej(l)))
@@ -967,7 +969,8 @@ function myLists() {
 function updateNotices() {
   const bar = $('#notice'); if (!bar) return;
   if (S.role !== 'mgr' || !S.ready.lists) { bar.hidden = true; $('#bankCount').textContent = ''; $('#takeCount').textContent = ''; return; }
-  const rl = S.lists.filter(l => isRej(l) && mineList(l)), rt = S.lists.filter(l => isRej(l) && mineTake(l));
+  // the notification goes to the person who sent it
+  const rl = S.lists.filter(l => isRej(l) && l.kind !== 'stocktake' && sentByMe(l)), rt = S.lists.filter(l => isRej(l) && l.kind === 'stocktake' && sentByMe(l));
   $('#bankCount').textContent = rl.length || ''; $('#takeCount').textContent = rt.length || '';
   const n = rl.length + rt.length;
   bar.hidden = !n;
