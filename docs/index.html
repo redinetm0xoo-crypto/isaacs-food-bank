@@ -11,30 +11,31 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=1.2">
+<link rel="stylesheet" href="style.css?v=1.3">
 </head>
 <body>
 <header class="top">
   <div class="brand">
-    <img src="https://teamisaac.org.uk/assets/foi-logo.webp" alt="Friends of Isaac's Food Bank" class="logo" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'logo-text',textContent:'Friends of Isaac’s Food Bank'}))">
+    <a href="https://teamisaac.org.uk/" target="_blank" rel="noopener" class="logolink" title="Friends of Isaac's Food Bank website"><img src="https://teamisaac.org.uk/assets/foi-logo.webp" alt="Friends of Isaac's Food Bank" class="logo" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'logo-text',textContent:'Friends of Isaac’s Food Bank'}))"></a>
     <div class="title"><b>Food Bank Manager</b><small id="who"></small></div>
   </div>
   <div class="topr"><button id="btnView" class="viewbtn" title="Temporary – will be replaced by logins">Switch view</button><div id="conn" class="conn" title="Connection">…</div></div>
 </header>
 <nav class="tabs" id="tabs">
-  <button data-tab="bank" data-view="mgr">Food Bank</button>
+  <button data-tab="bank" data-view="mgr">Food Bank <span id="bankCount" class="badge"></span></button>
   <button data-tab="stock" data-view="simon">Stock</button>
   <button data-tab="requests" data-view="simon">Requests <span id="reqCount" class="badge"></span></button>
   <button data-tab="in" data-view="simon">Book In</button>
   <button data-tab="transfer" data-view="simon">Transfer</button>
-  <button data-tab="take" data-view="both">Stock Take</button>
+  <button data-tab="take" data-view="both">Stock Take <span id="takeCount" class="badge"></span></button>
   <button data-tab="out" data-view="simon">Book Out</button>
   <button data-tab="history" data-view="both">History</button>
   <button data-tab="report" data-view="both">Report</button>
-  <button data-tab="emergency" data-view="both">Emergency</button>
+  <button data-tab="emergency" data-view="both">Contacts</button>
   <button data-tab="setup" data-view="simon">Setup</button>
 </nav>
 <div id="bankBar" class="bankbar" hidden></div>
+<div id="notice" class="notice" hidden></div>
 <main id="main">
   <section id="tab-bank" class="tab"></section>
   <section id="tab-stock" class="tab"></section>
@@ -49,12 +50,12 @@
   <section id="tab-setup" class="tab"></section>
 </main>
 <footer class="foot">
-  <button id="btnSuggest" class="link">Suggest a feature</button> ·
   <button id="btnVersions" class="link">Version history</button>
   <div class="small">Friends of Isaac's Food Bank CIC · Food Bank Manager v<span id="ver"></span></div>
 </footer>
 <div id="modal" class="modal hidden"><div class="box"><button class="x" id="modalX" aria-label="Close">×</button><div id="modalBody"></div></div></div>
 <div id="toast" class="toast hidden"></div>
-<script type="module" src="app.js?v=1.2"></script>
+<div id="micBar" class="micbar" hidden></div>
+<script type="module" src="app.js?v=1.3"></script>
 </body>
 </html>

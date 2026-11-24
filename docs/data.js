@@ -1,8 +1,18 @@
 // Food Bank Manager – Friends of Isaac's Food Bank
 // Version and fixed data. Bump APP_VERSION and add to VERSION_HISTORY every release.
-export const APP_VERSION = '1.2';
+export const APP_VERSION = '1.3';
 
 export const VERSION_HISTORY = [
+  ['1.3', '24 Nov 2026', [
+    'Users are now set up by Simon in Setup › Users (name and default food bank). A Food Bank Manager picks their name from a list instead of typing it, and starts on their default food bank.',
+    "If Simon doesn't accept a request, it goes back to the person who sent it: a red number on the tab, a red bar at the top and a message. Shopping and donation lists show in the Food Bank tab, highlighted with Simon's note – \"Change it and send again\" or \"OK, remove\". Stock takes show at the top of the Stock Take tab – \"Count again\" fills in the last counts.",
+    'Shopping lists: new 🎤 button – read the list out (e.g. "10 beans, 6 pasta") and it fills it in. Anything it isn\'t sure of is highlighted yellow and must be checked before Submit. A bar at the bottom shows what it is hearing while you scroll.',
+    'New item list when you type an item: bigger, easier to tap on a phone, and finds items from any word in the name.',
+    'Food Bank Managers can only choose items from the list – no new item names.',
+    'The Emergency tab is now called Contacts.',
+    "Tapping the logo opens the Friends of Isaac's Food Bank website.",
+    'The "Suggest a feature" box has been removed (requests now come through the next-version list).',
+  ]],
   ['1.2', '24 Nov 2026', [
     'Food Bank Manager: your food bank is shown at the top of every screen, with Change.',
     'Food Bank Manager: the Donation button is gone from inside lists – use "+ New donation list". New "Show / hide completed lists" button.',
