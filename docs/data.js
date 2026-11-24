@@ -1,8 +1,18 @@
 // Food Bank Manager – Friends of Isaac's Food Bank
 // Version and fixed data. Bump APP_VERSION and add to VERSION_HISTORY every release.
-export const APP_VERSION = '1.0';
+export const APP_VERSION = '1.1';
 
 export const VERSION_HISTORY = [
+  ['1.1', '24 Nov 2026', [
+    'Choose Simon or Food Bank Manager when the app opens (for testing – logins will replace this). "Switch view" at the top.',
+    "Simon's view: Stock now shows storage only (Main Storage, Container and any storage containers added with '+ Add storage container').",
+    "Simon's view: new Requests tab – review shopping lists and donations from the food banks, change quantities, Accept (books the stock) or Don't accept with a note.",
+    "Food Bank Manager's view: Food Bank tab with shopping lists on lined paper – From (storage) and To (your food bank), items and quantities, saves as you type, Save, Submit.",
+    'Submitted lists stay visible, greyed out and crossed through, with what Simon decided.',
+    'Donation button: marks a list as a direct donation (purple). When accepted, the items are booked in to the new "Donation" location and straight on to the food bank.',
+    'Suggest a feature now takes up to 10,000 characters (was 2,000).',
+    'Delivery list says "1 item" instead of "1 items".',
+  ]],
   ['1.0', '23 Nov 2026', [
     'First version of Food Bank Manager (web app).',
     'Stock: live stock for every location – Main Storage, Container and each food bank – with search and totals.',

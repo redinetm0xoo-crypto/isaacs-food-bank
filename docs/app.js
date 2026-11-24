@@ -3,10 +3,10 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, collection, onSnapshot,
-  writeBatch, increment, serverTimestamp, query, orderBy, limit, startAfter, getDocs, getDoc, setDoc, addDoc, deleteField
+  writeBatch, increment, serverTimestamp, query, orderBy, limit, startAfter, getDocs, getDoc, setDoc, addDoc, deleteDoc, updateDoc
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
-import { FIREBASE_CONFIG } from './firebase-config.js?v=1.0';
-import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.0';
+import { FIREBASE_CONFIG } from './firebase-config.js?v=1.1';
+import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.1';
 
 // ---------- helpers ----------
 const $ = (s, el = document) => el.querySelector(s);
@@ -17,10 +17,11 @@ const num = v => { const n = Number(v); return Number.isFinite(n) ? Math.round(n
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'loc';
 const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
 function toast(msg, ms = 2600) { const t = $('#toast'); t.textContent = msg; t.classList.remove('hidden'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.add('hidden'), ms); }
-function modal(html) { $('#modalBody').innerHTML = html; $('#modal').classList.remove('hidden'); return $('#modalBody'); }
-function closeModal() { $('#modal').classList.add('hidden'); }
+let modalLocked = false;
+function modal(html, { locked = false } = {}) { modalLocked = locked; $('#modalX').hidden = locked; $('#modalBody').innerHTML = html; $('#modal').classList.remove('hidden'); return $('#modalBody'); }
+function closeModal() { modalLocked = false; $('#modal').classList.add('hidden'); }
 $('#modalX').onclick = closeModal;
-$('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
+$('#modal').addEventListener('click', e => { if (e.target.id === 'modal' && !modalLocked) closeModal(); });
 
 // ---------- state ----------
 const S = {
@@ -31,12 +32,17 @@ const S = {
   ready: { items: false, locs: false, stock: false },
   view: { loc: 'all', q: '', hideZero: true },
   name: localStorage.getItem('fbm.name') || '',
+  role: localStorage.getItem('fbm.role') || '',   // 'simon' | 'mgr' (temporary until logins)
+  bank: localStorage.getItem('fbm.bank') || '',   // food bank manager's default food bank
+  lists: [],
 };
 const itemNames = () => Object.keys(S.items).filter(n => S.items[n].a !== false).sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }));
-const kindOrder = { store: 0, bank: 1, other: 2 };
+const kindOrder = { store: 0, bank: 1, other: 2, donation: 3 };
 const locNames = (all = false) => Object.keys(S.locs).filter(n => all || S.locs[n].a !== false)
   .sort((a, b) => (kindOrder[S.locs[a].kind] ?? 3) - (kindOrder[S.locs[b].kind] ?? 3) || (S.locs[a].o ?? 99) - (S.locs[b].o ?? 99) || a.localeCompare(b));
 const qty = (loc, item) => num(S.stock[loc]?.[item] || 0);
+const storeNames = () => locNames().filter(n => S.locs[n].kind === 'store');
+const bankNames = () => locNames().filter(n => S.locs[n].kind === 'bank');
 const locLabel = n => S.locs[n]?.site && S.locs[n].site.toLowerCase() !== n.toLowerCase() ? `${n} – ${S.locs[n].site}` : n;
 
 // ---------- firebase ----------
@@ -63,24 +69,25 @@ function startListeners() {
   onSnapshot(doc(db, 'config', 'items'), s => { S.items = s.data()?.i || {}; S.ready.items = true; refresh(); });
   onSnapshot(doc(db, 'config', 'locations'), s => { S.locs = s.data()?.l || {}; S.ready.locs = true; refresh(); });
   onSnapshot(doc(db, 'config', 'donors'), s => { S.donors = s.data()?.d || {}; refreshDonors(); });
+  onSnapshot(collection(db, 'lists'), qs => { S.lists = qs.docs.map(d => ({ id: d.id, ...d.data() })); S.ready.lists = true; renderBank(); renderRequests(); });
   onSnapshot(collection(db, 'stock'), qs => { const st = {}; qs.forEach(d => { const v = d.data(); st[v.loc] = v.q || {}; }); S.stock = st; S.ready.stock = true; refresh(); });
 }
 
 // ---------- booking ----------
 // lines: [{l: location, i: item, q: signed quantity}]
-async function book({ type, note, date, lines, extra = {} }) {
+function addMovement(b, { type, note, date, lines, extra = {} }) {
   lines = lines.filter(x => x.q);
   if (!lines.length) throw new Error('Nothing to book.');
-  const b = writeBatch(db);
   const mref = doc(collection(db, 'movements'));
   b.set(mref, { date, type, note: note || '', lines, locs: [...new Set(lines.map(x => x.l))], by: S.name || '', uid, created: serverTimestamp(), ...extra });
   applyStock(b, lines, 1);
   // new items go into the item list automatically
   const newItems = [...new Set(lines.map(x => x.i))].filter(i => !S.items[i]);
   if (newItems.length) b.set(doc(db, 'config', 'items'), { i: Object.fromEntries(newItems.map(n => [n, { a: true }])) }, { merge: true });
-  await b.commit();
   return mref.id;
 }
+// one booking, plus anything else that must be saved in the same write (also(batch, id))
+async function book(m, also) { const b = writeBatch(db); const id = addMovement(b, m); if (also) also(b, id); await b.commit(); return id; }
 function applyStock(b, lines, sign) {
   const per = {};
   for (const x of lines) { (per[x.l] ||= {}); per[x.l][x.i] = (per[x.l][x.i] || 0) + sign * x.q; }
@@ -97,15 +104,26 @@ async function voidMovement(id, data) {
 }
 
 // ---------- tabs ----------
-let current = 'stock';
+let current = '';
 $('#tabs').addEventListener('click', e => { const t = e.target.closest('button')?.dataset.tab; if (t) showTab(t); });
+const viewOf = () => S.role === 'mgr' ? 'mgr' : 'simon';
+function applyView() {
+  document.querySelectorAll('#tabs button').forEach(b => { b.hidden = b.dataset.view !== viewOf(); });
+  $('#btnView').textContent = 'Switch view: ' + (S.role === 'mgr' ? 'Food Bank Manager' : 'Simon');
+  showTab(viewOf() === 'mgr' ? 'bank' : 'stock');
+  showWho();
+}
+$('#btnView').onclick = () => chooseRole();
 function showTab(t) {
+  if ($(`#tabs button[data-tab="${t}"]`)?.dataset.view !== viewOf()) t = viewOf() === 'mgr' ? 'bank' : 'stock';
   current = t;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
   document.querySelectorAll('.tab').forEach(s => s.classList.toggle('on', s.id === 'tab-' + t));
   if (t === 'history') loadHistory(true);
   if (t === 'take') renderTakeTable();
   if (t === 'setup') renderSetup();
+  if (t === 'bank') renderBank();
+  if (t === 'requests') renderRequests();
   scrollTo({ top: 0 });
 }
 function refresh() {
@@ -113,6 +131,14 @@ function refresh() {
   fillItemList(); fillLocSelects(); renderStock(); renderLinesAvail();
   if (current === 'take') renderTakeTable();
   if (current === 'setup') renderSetup();
+  renderBank(); renderRequests();
+  if (!refresh.once) { refresh.once = true; firstReady(); }
+}
+function firstReady() {
+  // the "Donation" stock location for direct donations
+  if (!S.locs['Donation']) setDoc(doc(db, 'config', 'locations'), { l: { Donation: { kind: 'donation', site: 'Direct donations to food banks', addr: '', a: true, o: 90 } } }, { merge: true });
+  if (!S.role) chooseRole();
+  else { applyView(); if (S.role === 'mgr' && (!S.name || !S.bank)) askName(true); }
 }
 function fillItemList() {
   let dl = $('#itemsList'); if (!dl) { dl = document.createElement('datalist'); dl.id = 'itemsList'; document.body.append(dl); }
@@ -131,21 +157,44 @@ function fillLocSelects() {
   });
 }
 
-// ---------- name ----------
-function showWho() { $('#who').textContent = S.name ? `Signed in as ${S.name}` : "Friends of Isaac's Food Bank"; }
+// ---------- who is using the app (temporary until logins) ----------
+function showWho() {
+  $('#who').textContent = S.role === 'mgr' ? `${S.name || 'Food Bank Manager'}${S.bank ? ' – ' + locLabel(S.bank) : ''}` : S.role === 'simon' ? `Simon's view${S.name && S.name !== 'Simon' ? ' – ' + S.name : ''}` : "Friends of Isaac's Food Bank";
+}
+function setName(n) { S.name = n; localStorage.setItem('fbm.name', n); showWho(); }
+function chooseRole() {
+  const m = modal(`<h2>Who is using the app?</h2><p class="muted">For testing only – this will be replaced by logins.</p>
+    <div class="rolepick"><button data-r="simon">Simon<small>Stock, requests from food banks, bookings</small></button><button data-r="mgr">Food Bank Manager<small>Shopping lists and donations</small></button></div>`, { locked: true });
+  $('.rolepick', m).onclick = e => {
+    const r = e.target.closest('button')?.dataset.r; if (!r) return;
+    S.role = r; localStorage.setItem('fbm.role', r);
+    if (r === 'simon') { setName('Simon'); closeModal(); applyView(); }
+    else { applyView(); askName(true); }
+  };
+}
 function askName(force) {
   if (S.name && !force) return;
-  const m = modal(`<h2>Your name</h2><p>Your name is saved on every booking you make, so others can see who did what. It is kept on this device.</p>
-    <label>Name<input id="nm" value="${esc(S.name)}" placeholder="e.g. Dave"></label><p><button class="btn" id="nmSave">Save</button></p>`);
+  const mgr = S.role === 'mgr';
+  const banks = bankNames();
+  if (mgr && !banks.includes(S.bank)) S.bank = banks[0] || '';
+  const m = modal(`<h2>Your name</h2><p>Your name is saved on everything you do in the app, so others can see who did what. It is kept on this device.</p>
+    <label>Name<input id="nm" value="${esc(mgr && S.name === 'Simon' ? '' : S.name)}" placeholder="e.g. Dave"></label>
+    ${mgr ? `<label style="margin-top:10px">Your food bank<select id="nmBank">${banks.map(n => `<option value="${esc(n)}" ${n === S.bank ? 'selected' : ''}>${esc(locLabel(n))}</option>`).join('')}</select></label>` : ''}
+    <p><button class="btn" id="nmSave">Save</button></p>`, { locked: mgr && (!S.name || S.name === 'Simon') });
   $('#nm', m).focus();
-  $('#nmSave', m).onclick = () => { S.name = norm($('#nm', m).value); localStorage.setItem('fbm.name', S.name); showWho(); closeModal(); };
+  $('#nmSave', m).onclick = () => {
+    const n = norm($('#nm', m).value); if (mgr && !n) return toast('Please enter your name');
+    setName(n);
+    if (mgr) { S.bank = $('#nmBank', m).value; localStorage.setItem('fbm.bank', S.bank); }
+    showWho(); closeModal(); renderBank(true);
+  };
 }
 showWho();
 
 // ---------- Stock tab ----------
 function renderStock() {
   const el = $('#tab-stock');
-  const locs = locNames();
+  const locs = storeNames();   // storage only – food banks are not shown here
   const v = S.view;
   if (v.loc !== 'all' && !S.locs[v.loc]) v.loc = 'all';
   const tot = l => Object.values(S.stock[l] || {}).reduce((a, b) => a + num(b), 0);
@@ -157,15 +206,16 @@ function renderStock() {
   el.innerHTML = `
     <h2>Stock</h2>
     <div class="stats">
-      <div class="stat ${v.loc === 'all' ? 'on' : ''}" data-loc="all"><b>${Math.round(locs.reduce((a, l) => a + tot(l), 0)).toLocaleString()}</b><span>All locations</span></div>
+      <div class="stat ${v.loc === 'all' ? 'on' : ''}" data-loc="all"><b>${Math.round(locs.reduce((a, l) => a + tot(l), 0)).toLocaleString()}</b><span>All storage</span></div>
       ${locs.map(l => `<div class="stat ${v.loc === l ? 'on' : ''}" data-loc="${esc(l)}"><b>${Math.round(tot(l)).toLocaleString()}</b><span>${esc(l)}${S.locs[l].site && S.locs[l].site !== l ? `<br><small>${esc(S.locs[l].site)}</small>` : ''}</span></div>`).join('')}
     </div>
     <div class="row noprint">
       <label>Search items<input id="stockQ" value="${esc(v.q)}" placeholder="Type to filter, e.g. beans"></label>
       <label style="flex:0 0 auto"><input type="checkbox" id="hideZero" ${v.hideZero ? 'checked' : ''} style="display:inline;width:auto"> Hide items with no stock</label>
       <button class="btn g sm" id="csv">Download CSV</button>
+      <button class="btn y sm" id="addStore">+ Add storage container</button>
     </div>
-    <p class="small muted">${rows.length} items shown. Red = below zero (more booked out than booked in – usually a missed booking or a stock take needed). Tap an item for details.</p>
+    <p class="small muted">${rows.length} items shown in storage. Red = below zero (more booked out than booked in – usually a missed booking or a stock take needed). Tap an item for details.</p>
     <div class="tablewrap"><table>
       <thead><tr><th>Item</th>${cols.map(l => `<th>${esc(l)}${S.locs[l].site && S.locs[l].site !== l ? `<small>${esc(S.locs[l].site)}</small>` : ''}</th>`).join('')}${cols.length > 1 ? '<th class="tot">Total</th>' : ''}</tr></thead>
       <tbody>${rows.map(i => {
@@ -173,6 +223,15 @@ function renderStock() {
         return `<tr data-item="${esc(i)}"><td>${esc(i)}</td>${vals.map(x => `<td class="${x < 0 ? 'neg' : x === 0 ? 'zero' : ''}">${x}</td>`).join('')}${cols.length > 1 ? `<td class="tot ${t < 0 ? 'neg' : ''}">${num(t)}</td>` : ''}</tr>`;
       }).join('') || `<tr><td colspan="${cols.length + 2}" class="muted">No items match.</td></tr>`}</tbody>
     </table></div>`;
+  $('#addStore', el).onclick = () => {
+    const m = modal(`<h2>Add storage container</h2><label>Name<input id="nsN" placeholder="e.g. Container 2"></label><label style="margin-top:10px">Description (optional)<input id="nsS" placeholder="e.g. Blue container behind the hall"></label><p><button class="btn" id="nsSave">Add</button></p>`);
+    $('#nsN', m).focus();
+    $('#nsSave', m).onclick = () => {
+      const n = norm($('#nsN', m).value); if (!n) return;
+      if (Object.keys(S.locs).some(x => x.toLowerCase() === n.toLowerCase())) return toast('That name is already used');
+      setDoc(doc(db, 'config', 'locations'), { l: { [n]: { kind: 'store', site: norm($('#nsS', m).value), addr: '', a: true, o: 20 } } }, { merge: true }).then(() => { toast('Storage container added'); closeModal(); });
+    };
+  };
   el.querySelectorAll('.stat').forEach(s => s.onclick = () => { v.loc = s.dataset.loc; renderStock(); });
   const qi = $('#stockQ', el);
   qi.oninput = () => { v.q = qi.value; renderStock(); };
@@ -187,7 +246,7 @@ function renderStock() {
   el.querySelector('tbody').onclick = e => { const i = e.target.closest('tr')?.dataset.item; if (i) itemModal(i); };
 }
 function itemModal(i) {
-  const locs = locNames(); const t = locs.reduce((a, l) => a + qty(l, i), 0);
+  const locs = storeNames(); const t = locs.reduce((a, l) => a + qty(l, i), 0);
   modal(`<h2>${esc(i)}</h2><table>${locs.map(l => `<tr><td>${esc(locLabel(l))}</td><td class="${qty(l, i) < 0 ? 'neg' : ''}">${qty(l, i)}</td></tr>`).join('')}
     <tr><td class="tot">Total</td><td class="tot">${num(t)}</td></tr></table>
     <p class="small muted">To move this item, use Transfer. To correct a count, use Stock Take.</p>`);
@@ -288,7 +347,7 @@ function initTransfer() {
 function deliveryNote({ date, from, to, note, items, by }) {
   const L = S.locs[to] || {};
   const text = `Isaac's Food Bank – delivery\n${fmtDate(date)}\nFrom: ${from}\nTo: ${locLabel(to)}${L.addr ? '\n' + L.addr : ''}${note ? '\nNote: ' + note : ''}${by ? '\nSent by: ' + by : ''}\n\n` +
-    items.map(([i, q]) => `${q} × ${i}`).join('\n') + `\n\n${items.length} items, ${num(items.reduce((a, x) => a + x[1], 0))} units`;
+    items.map(([i, q]) => `${q} × ${i}`).join('\n') + `\n\n${items.length} item${items.length === 1 ? '' : 's'}, ${num(items.reduce((a, x) => a + x[1], 0))} units`;
   const m = modal(`<h2>Delivery list</h2><pre class="note" id="dn">${esc(text)}</pre>
     <p class="noprint"><button class="btn" id="dnShare">Share</button> <button class="btn g" id="dnCopy">Copy</button> <button class="btn g" id="dnPrint">Print</button></p>`);
   $('#dnShare', m).onclick = async () => { if (navigator.share) { try { await navigator.share({ title: 'Delivery list', text }); } catch { } } else { location.href = 'https://wa.me/?text=' + encodeURIComponent(text); } };
@@ -437,7 +496,7 @@ function renderSetup() {
     <div class="card"><h3 style="margin-top:0">Locations</h3>
       <div class="tablewrap"><table><thead><tr><th>Name</th><th>Type</th><th>Food bank / site name</th><th>Address</th><th>In use</th></tr></thead><tbody>
       ${locNames(true).map(n => { const L = S.locs[n]; return `<tr data-l="${esc(n)}"><td>${esc(n)}</td>
-        <td><select data-f="kind"><option value="store" ${L.kind === 'store' ? 'selected' : ''}>Storage</option><option value="bank" ${L.kind === 'bank' ? 'selected' : ''}>Food bank</option><option value="other" ${L.kind === 'other' ? 'selected' : ''}>Other</option></select></td>
+        <td><select data-f="kind"><option value="store" ${L.kind === 'store' ? 'selected' : ''}>Storage</option><option value="bank" ${L.kind === 'bank' ? 'selected' : ''}>Food bank</option><option value="other" ${L.kind === 'other' ? 'selected' : ''}>Other</option><option value="donation" ${L.kind === 'donation' ? 'selected' : ''}>Direct donations</option></select></td>
         <td><input data-f="site" value="${esc(L.site || '')}"></td><td><input data-f="addr" value="${esc(L.addr || '')}" style="min-width:260px"></td>
         <td><input type="checkbox" data-f="a" ${L.a !== false ? 'checked' : ''}></td></tr>`; }).join('')}
       </tbody></table></div>
@@ -478,13 +537,211 @@ function renderSetup() {
   };
 }
 
+// ---------- Food Bank Manager view: shopping lists ----------
+const LS = { local: {}, timers: {}, saving: {} };   // unsaved local copies of draft lists
+const STATUS = { draft: 'Draft', submitted: 'Sent to Simon', accepted: 'Accepted', rejected: 'Not accepted' };
+const tsMs = t => t?.toMillis ? t.toMillis() : (t?.seconds ? t.seconds * 1000 : Date.now());
+const fmtTs = t => { const d = new Date(tsMs(t)); return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); };
+const listOf = id => LS.local[id] || S.lists.find(l => l.id === id);
+function myLists() {
+  const order = { draft: 0, submitted: 1, accepted: 2, rejected: 2 };
+  return S.lists.filter(l => l.to === S.bank || l.uid === uid)
+    .sort((a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3) || (a.status === 'draft' ? tsMs(b.created) - tsMs(a.created) : tsMs(b.decidedAt || b.submittedAt) - tsMs(a.decidedAt || a.submittedAt)));
+}
+function renderBank(force) {
+  const el = $('#tab-bank');
+  if (!S.ready.locs || !S.ready.items) { el.innerHTML = '<p class="muted">Loading…</p>'; return; }
+  if (!el.dataset.init || force) {
+    el.dataset.init = '1';
+    el.innerHTML = `<h2>Food Bank</h2><p class="muted">Make a shopping list of what your food bank needs and send it to Simon. Use <b>Donation</b> for things given straight to you that never went through storage. Lists save as you type.</p>
+      <p class="noprint"><button class="btn" id="newList">+ New shopping list</button> <button class="btn p" id="newDon">+ New donation list</button></p>
+      <div class="lists" id="listsBox"></div><p class="muted small" id="listsNone"></p>`;
+    $('#newList', el).onclick = () => newList(false);
+    $('#newDon', el).onclick = () => newList(true);
+  }
+  const box = $('#listsBox', el);
+  const lists = myLists();
+  const cards = lists.map(l => {
+    let c = box.querySelector(`.paper[data-id="${l.id}"]`);
+    const typing = c && c.contains(document.activeElement) && /INPUT|SELECT/.test(document.activeElement.tagName);
+    const busy = c && (typing || LS.timers[l.id] || LS.saving[l.id]);
+    if (!busy) { const n = listCard(listOf(l.id)); if (c) c.replaceWith(n); c = n; }
+    return c;
+  });
+  const same = cards.length === box.children.length && cards.every((c, k) => box.children[k] === c);
+  if (!same) box.replaceChildren(...cards);
+  $('#listsNone', el).textContent = lists.length ? '' : 'No lists yet – press "New shopping list" to start one.';
+}
+async function newList(donation) {
+  if (!S.name) return askName(true);
+  const to = bankNames().includes(S.bank) ? S.bank : bankNames()[0];
+  const from = storeNames().includes('Main Storage') ? 'Main Storage' : storeNames()[0];
+  try {
+    await addDoc(collection(db, 'lists'), { from: donation ? '' : from, to, donation, donor: '', lines: [], status: 'draft', by: S.name, uid, created: serverTimestamp(), updated: serverTimestamp() });
+    toast(donation ? 'New donation list' : 'New shopping list');
+  } catch (e) { toast('Could not create the list: ' + e.message, 5000); }
+}
+function listCard(l) {
+  const c = document.createElement('div');
+  c.className = `paper ${l.donation ? 'don' : ''} ${l.status !== 'draft' ? 'done' : ''}`;
+  c.dataset.id = l.id;
+  const edit = l.status === 'draft';
+  const title = l.donation ? 'Donation' : 'Shopping list';
+  const head = `<h4>${title}<span class="status ${l.status}">${STATUS[l.status] || l.status}</span></h4>
+    <div class="small muted" style="line-height:20px">${esc(l.by || '')}${l.created ? ' · started ' + fmtTs(l.created) : ''}${l.submittedAt ? ' · sent ' + fmtTs(l.submittedAt) : ''}</div>`;
+  if (!edit) {
+    c.innerHTML = `${head}<div class="ph"><span>${l.donation ? 'Donated by' : 'From'}</span><span>${esc(l.donation ? (l.donor || '–') : l.from)}</span><span>To</span><span>${esc(locLabel(l.to))}</span></div>
+      ${(l.status === 'accepted' ? (l.acceptedLines || l.lines) : l.lines).map(x => `<div class="pl"><span class="pn">${esc(x.i)}</span><span class="pq"><b>${x.q}</b></span></div>`).join('')}
+      <div class="pfoot small">${l.status === 'accepted' ? `Accepted by ${esc(l.decidedBy || 'Simon')} ${l.decidedAt ? fmtTs(l.decidedAt) : ''}${l.changed ? ' – some quantities were changed' : ''}` : l.status === 'rejected' ? `Not accepted by ${esc(l.decidedBy || 'Simon')}${l.reason ? ': ' + esc(l.reason) : ''}` : 'Waiting for Simon'}</div>`;
+    return c;
+  }
+  const stores = storeNames(), banks = bankNames();
+  c.innerHTML = `${head}
+    <div class="ph">
+      ${l.donation ? `<span>Donated by</span><input data-f="donor" list="donorList" value="${esc(l.donor || '')}" placeholder="optional – who gave it">`
+                   : `<span>From</span><select data-f="from">${stores.map(n => `<option value="${esc(n)}" ${n === l.from ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>`}
+      <span>To</span><select data-f="to">${banks.map(n => `<option value="${esc(n)}" ${n === l.to ? 'selected' : ''}>${esc(locLabel(n))}</option>`).join('')}</select>
+    </div>
+    <div class="plines"></div>
+    <div class="padd noprint"><input list="itemsList" class="it" placeholder="Add an item"><input type="number" class="qt" min="1" step="1" inputmode="numeric" placeholder="Qty"><button class="btn y sm add" type="button">Add</button></div>
+    <div class="pfoot noprint"><button class="btn sm sv">Save</button><button class="btn sm g sub">Submit</button><button class="btn sm p ${l.donation ? '' : 'off'} dn" title="Items given straight to the food bank">Donation</button><button class="link dl">Delete</button><span class="saved"></span></div>`;
+  drawLines(c, l);
+  const mut = fn => { const cur = JSON.parse(JSON.stringify(listOf(l.id))); fn(cur); LS.local[l.id] = cur; schedule(l.id); };
+  c.addEventListener('change', e => {
+    const f = e.target.dataset.f, k = e.target.dataset.k;
+    if (f) { mut(x => { x[f] = norm(e.target.value); }); drawLines(c, listOf(l.id)); }
+    if (k !== undefined) { const q = num(e.target.value); mut(x => { if (q > 0) x.lines[k].q = q; else x.lines.splice(k, 1); }); drawLines(c, listOf(l.id)); }
+  });
+  c.addEventListener('input', e => { const k = e.target.dataset.k; if (k !== undefined && num(e.target.value) > 0) mut(x => { x.lines[k].q = num(e.target.value); }); });
+  c.addEventListener('click', async e => {
+    const t = e.target;
+    if (t.dataset.del !== undefined) { mut(x => x.lines.splice(+t.dataset.del, 1)); drawLines(c, listOf(l.id)); }
+    else if (t.classList.contains('add')) addLine();
+    else if (t.classList.contains('sv')) { await saveList(l.id); toast('List saved'); }
+    else if (t.classList.contains('dn')) { mut(x => { x.donation = !x.donation; if (x.donation) x.from = ''; else x.from = storeNames().includes('Main Storage') ? 'Main Storage' : storeNames()[0]; }); await saveList(l.id); renderBank(true); }
+    else if (t.classList.contains('dl')) {
+      if (!confirmBox('Delete this list? This cannot be undone.')) return;
+      clearTimeout(LS.timers[l.id]); delete LS.timers[l.id]; delete LS.local[l.id];
+      try { await deleteDoc(doc(db, 'lists', l.id)); toast('List deleted'); } catch (err) { toast('Not deleted: ' + err.message, 5000); }
+    }
+    else if (t.classList.contains('sub')) {
+      const cur = listOf(l.id);
+      if (!cur.lines.length) return toast('Add at least one item first');
+      if (!cur.to) return toast('Choose a food bank');
+      if (!cur.donation && !cur.from) return toast('Choose where it comes from');
+      if (!confirmBox(`Send this ${cur.donation ? 'donation' : 'shopping list'} to Simon? You can't change it after this.`)) return;
+      try {
+        await saveList(l.id);
+        await updateDoc(doc(db, 'lists', l.id), { status: 'submitted', submittedAt: serverTimestamp(), submittedBy: S.name });
+        toast('Sent to Simon');
+      } catch (err) { toast('Not sent: ' + err.message, 5000); }
+    }
+  });
+  const it = $('.it', c), qt = $('.qt', c);
+  function addLine() {
+    const name = norm(it.value), q = num(qt.value);
+    if (!name) return it.focus();
+    if (!(q > 0)) { qt.focus(); return toast('Enter a quantity'); }
+    const nm = Object.keys(S.items).find(n => n.toLowerCase() === name.toLowerCase()) || name;
+    mut(x => { const ex = x.lines.find(y => y.i === nm); if (ex) ex.q = num(ex.q + q); else x.lines.push({ i: nm, q }); });
+    it.value = ''; qt.value = ''; it.focus(); drawLines(c, listOf(l.id));
+  }
+  it.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); qt.focus(); } });
+  qt.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addLine(); } });
+  return c;
+}
+function drawLines(c, l) {
+  const box = $('.plines', c); if (!box) return;
+  box.innerHTML = l.lines.map((x, k) => {
+    const av = !l.donation && l.from ? qty(l.from, x.i) : null;
+    return `<div class="pl"><span class="pn" title="${esc(x.i)}">${esc(x.i)}${S.items[x.i] ? '' : ' <span class="pill st">new</span>'}</span>${av !== null ? `<span class="av">${esc(l.from)} has ${av}</span>` : ''}<input type="number" min="0" data-k="${k}" value="${x.q}"><button class="link" data-del="${k}" title="Remove">✕</button></div>`;
+  }).join('') || '<div class="pl muted small">No items yet</div>';
+}
+function schedule(id) {
+  const c = document.querySelector(`.paper[data-id="${id}"] .saved`); if (c) c.textContent = 'Not saved yet…';
+  clearTimeout(LS.timers[id]);
+  LS.timers[id] = setTimeout(() => { delete LS.timers[id]; saveList(id); }, 900);
+}
+async function saveList(id) {
+  clearTimeout(LS.timers[id]); delete LS.timers[id];
+  const l = LS.local[id]; if (!l) return;
+  const c = document.querySelector(`.paper[data-id="${id}"] .saved`);
+  LS.saving[id] = true; if (c) c.textContent = 'Saving…';
+  try {
+    await updateDoc(doc(db, 'lists', id), { from: l.from || '', to: l.to, donation: !!l.donation, donor: l.donor || '', lines: l.lines, updated: serverTimestamp() });
+    if (LS.local[id] === l) delete LS.local[id];
+    if (c) c.textContent = navigator.onLine ? 'Saved ✓' : 'Saved on this device – will sync';
+  } catch (e) { if (c) c.textContent = 'Not saved: ' + e.message; }
+  finally { delete LS.saving[id]; }
+}
+
+// ---------- Simon's view: requests from food banks ----------
+function renderRequests() {
+  const el = $('#tab-requests');
+  const pending = S.lists.filter(l => l.status === 'submitted').sort((a, b) => tsMs(a.submittedAt) - tsMs(b.submittedAt));
+  $('#reqCount').textContent = pending.length || '';
+  if (!S.ready.locs || !S.ready.stock) return;
+  if (el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;   // don't wipe what Simon is typing
+  const done = S.lists.filter(l => l.status === 'accepted' || l.status === 'rejected').sort((a, b) => tsMs(b.decidedAt) - tsMs(a.decidedAt)).slice(0, 15);
+  el.innerHTML = `<h2>Requests</h2><p class="muted">Shopping lists and donations sent by the food banks. Check the quantities (change them if you can't send everything), then Accept – that books the stock straight away. Purple = direct donation.</p>
+    ${pending.map(l => reqCard(l)).join('') || '<div class="card muted">No requests waiting.</div>'}
+    ${done.length ? `<h3>Recently decided</h3><div class="card">${done.map(l => `<div class="hist"><div class="h1"><b>${fmtTs(l.decidedAt)}</b><span class="status ${l.status}">${STATUS[l.status]}</span><span>${l.donation ? 'Donation' : esc(l.from) + ' →'} ${esc(locLabel(l.to))}</span></div><div class="small muted">${esc(l.by)} · ${(l.acceptedLines || l.lines).length} items${l.reason ? ' · ' + esc(l.reason) : ''}</div></div>`).join('')}</div>` : ''}`;
+  el.querySelectorAll('.req').forEach(card => {
+    const l = S.lists.find(x => x.id === card.dataset.id);
+    $('.acc', card).onclick = () => acceptRequest(l, card);
+    $('.rej', card).onclick = () => rejectRequest(l, card);
+  });
+}
+function reqCard(l) {
+  return `<div class="card req ${l.donation ? 'don' : ''}" data-id="${l.id}">
+    <div class="h1"><b>${l.donation ? 'Direct donation' : 'Shopping list'}</b> · ${l.donation ? '' : esc(l.from) + ' → '}${esc(locLabel(l.to))}</div>
+    <div class="small muted">From ${esc(l.by || '?')}${l.submittedAt ? ', sent ' + fmtTs(l.submittedAt) : ''}${l.donation && l.donor ? ' · donated by ' + esc(l.donor) : ''}</div>
+    <div class="tablewrap" style="margin-top:8px"><table><thead><tr><th>Item</th><th>Asked for</th>${l.donation ? '' : `<th>${esc(l.from)} has</th>`}<th>${l.donation ? 'Book in' : 'Send'}</th></tr></thead><tbody>
+      ${l.lines.map((x, k) => { const av = l.donation ? null : qty(l.from, x.i); return `<tr><td>${esc(x.i)}</td><td>${x.q}</td>${av === null ? '' : `<td class="${av < x.q ? 'neg' : ''}">${av}</td>`}<td><input type="number" min="0" data-k="${k}" value="${x.q}"></td></tr>`; }).join('')}
+    </tbody></table></div>
+    <div class="row" style="margin-top:10px"><label>Note for the food bank (needed if not accepting)<input class="why" placeholder="e.g. Out of stock – will send next week"></label>
+      <button class="btn acc">Accept</button><button class="btn r rej">Don't accept</button></div></div>`;
+}
+async function acceptRequest(l, card) {
+  const lines = l.lines.map((x, k) => ({ i: x.i, q: num($(`input[data-k="${k}"]`, card).value) })).filter(x => x.q > 0);
+  if (!lines.length) return toast('Nothing to accept – all quantities are 0');
+  const changed = lines.length !== l.lines.length || lines.some((x, k) => x.q !== l.lines.find(y => y.i === x.i)?.q);
+  const short = l.donation ? [] : lines.filter(x => qty(l.from, x.i) < x.q).map(x => x.i);
+  if (short.length && !confirmBox(`${l.from} doesn't have enough of: ${short.join(', ')}. Accept anyway? (stock there will go below zero)`)) return;
+  const reason = norm($('.why', card).value);
+  const date = today();
+  $('.acc', card).disabled = true;
+  try {
+    const b = writeBatch(db); const ids = [];
+    if (l.donation) {
+      // the items come in to the "Donation" location, then go straight out to the food bank
+      ids.push(addMovement(b, { type: 'donation', note: `Donation - direct to ${l.to}${l.donor ? ' from ' + l.donor : ''}`, date, lines: lines.map(x => ({ l: 'Donation', i: x.i, q: x.q })), extra: { from: l.donor || '', listId: l.id, listBy: l.by || '' } }));
+      ids.push(addMovement(b, { type: 'transfer', note: 'Stock Transfer - direct donation', date, lines: lines.flatMap(x => [{ l: 'Donation', i: x.i, q: -x.q }, { l: l.to, i: x.i, q: x.q }]), extra: { from: 'Donation', to: l.to, listId: l.id, listBy: l.by || '' } }));
+      if (l.donor) b.set(doc(db, 'config', 'donors'), { d: { [l.donor]: increment(1) } }, { merge: true });
+    } else {
+      ids.push(addMovement(b, { type: 'transfer', note: `Stock Transfer - shopping list from ${l.by || l.to}`, date, lines: lines.flatMap(x => [{ l: l.from, i: x.i, q: -x.q }, { l: l.to, i: x.i, q: x.q }]), extra: { from: l.from, to: l.to, listId: l.id, listBy: l.by || '' } }));
+    }
+    b.update(doc(db, 'lists', l.id), { status: 'accepted', acceptedLines: lines, changed, reason, decidedBy: S.name || 'Simon', decidedAt: serverTimestamp(), movementIds: ids });
+    await b.commit();
+    toast(l.donation ? `Donation booked in to ${l.to}` : `Transferred to ${l.to}`);
+    if (!l.donation) deliveryNote({ date, from: l.from, to: l.to, note: `Shopping list from ${l.by}`, items: lines.map(x => [x.i, x.q]), by: S.name });
+  } catch (e) { toast('Not accepted: ' + e.message, 5000); $('.acc', card).disabled = false; }
+}
+async function rejectRequest(l, card) {
+  const reason = norm($('.why', card).value);
+  if (!reason) { $('.why', card).focus(); return toast('Add a note so the food bank knows why'); }
+  try { await updateDoc(doc(db, 'lists', l.id), { status: 'rejected', reason, decidedBy: S.name || 'Simon', decidedAt: serverTimestamp() }); toast('Marked as not accepted'); }
+  catch (e) { toast('Not saved: ' + e.message, 5000); }
+}
+
 // ---------- footer: suggestions + version history ----------
 $('#btnVersions').onclick = () => modal(`<h2>Version history</h2>${VERSION_HISTORY.map(([v, d, xs]) => `<h3>v${v} – ${d}</h3><ul>${xs.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`).join('')}`);
 $('#btnSuggest').onclick = () => {
-  const m = modal(`<h2>Suggest a feature</h2><p class="muted">Ideas and problems go to the app's builder.</p><label>Your suggestion<textarea id="sg" rows="5"></textarea></label><p><button class="btn" id="sgSend">Send</button></p>`);
+  const m = modal(`<h2>Suggest a feature</h2><p class="muted">Ideas and problems go to the app's builder.</p><label>Your suggestion<textarea id="sg" rows="8" maxlength="10000"></textarea></label><p class="small muted" id="sgN">Up to 10,000 characters.</p><p><button class="btn" id="sgSend">Send</button></p>`);
+  $('#sg', m).oninput = e => { $('#sgN', m).textContent = `${e.target.value.length.toLocaleString()} of 10,000 characters`; };
   $('#sgSend', m).onclick = async () => {
-    const t = $('#sg', m).value.trim(); if (!t) return;
-    try { await addDoc(collection(db, 'suggestions'), { text: t.slice(0, 2000), name: S.name || '', ver: APP_VERSION + ' web', uid, created: serverTimestamp(), status: 'new' }); toast('Thanks – suggestion sent'); closeModal(); }
+    const t = $('#sg', m).value.trim(); if (!t) return; if (t.length > 10000) return toast(`Too long – ${t.length} characters, the limit is 10,000. Please split it into two.`, 5000);
+    try { await addDoc(collection(db, 'suggestions'), { text: t, name: S.name || '', ver: APP_VERSION + ' web', uid, created: serverTimestamp(), status: 'new' }); toast('Thanks – suggestion sent'); closeModal(); }
     catch (e) { toast('Not sent: ' + e.message, 5000); }
   };
 };
@@ -519,5 +776,4 @@ window.FBM = {
 // ---------- start ----------
 initIn(); initTransfer(); initTake(); initOut(); initHistory();
 refresh();
-setTimeout(() => askName(false), 800);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });

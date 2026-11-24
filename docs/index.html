@@ -11,7 +11,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=1.0">
+<link rel="stylesheet" href="style.css?v=1.1">
 </head>
 <body>
 <header class="top">
@@ -19,19 +19,23 @@
     <img src="https://teamisaac.org.uk/assets/foi-logo.webp" alt="Friends of Isaac's Food Bank" class="logo" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'logo-text',textContent:'Friends of Isaac’s Food Bank'}))">
     <div class="title"><b>Food Bank Manager</b><small id="who"></small></div>
   </div>
-  <div id="conn" class="conn" title="Connection">…</div>
+  <div class="topr"><button id="btnView" class="viewbtn" title="Temporary – will be replaced by logins">Switch view</button><div id="conn" class="conn" title="Connection">…</div></div>
 </header>
 <nav class="tabs" id="tabs">
-  <button data-tab="stock" class="on">Stock</button>
-  <button data-tab="in">Book In</button>
-  <button data-tab="transfer">Transfer</button>
-  <button data-tab="take">Stock Take</button>
-  <button data-tab="out">Book Out</button>
-  <button data-tab="history">History</button>
-  <button data-tab="setup">Setup</button>
+  <button data-tab="bank" data-view="mgr">Food Bank</button>
+  <button data-tab="stock" data-view="simon">Stock</button>
+  <button data-tab="requests" data-view="simon">Requests <span id="reqCount" class="badge"></span></button>
+  <button data-tab="in" data-view="simon">Book In</button>
+  <button data-tab="transfer" data-view="simon">Transfer</button>
+  <button data-tab="take" data-view="simon">Stock Take</button>
+  <button data-tab="out" data-view="simon">Book Out</button>
+  <button data-tab="history" data-view="simon">History</button>
+  <button data-tab="setup" data-view="simon">Setup</button>
 </nav>
 <main id="main">
-  <section id="tab-stock" class="tab on"></section>
+  <section id="tab-bank" class="tab"></section>
+  <section id="tab-stock" class="tab"></section>
+  <section id="tab-requests" class="tab"></section>
   <section id="tab-in" class="tab"></section>
   <section id="tab-transfer" class="tab"></section>
   <section id="tab-take" class="tab"></section>
@@ -46,6 +50,6 @@
 </footer>
 <div id="modal" class="modal hidden"><div class="box"><button class="x" id="modalX" aria-label="Close">×</button><div id="modalBody"></div></div></div>
 <div id="toast" class="toast hidden"></div>
-<script type="module" src="app.js?v=1.0"></script>
+<script type="module" src="app.js?v=1.1"></script>
 </body>
 </html>
