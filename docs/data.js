@@ -1,8 +1,21 @@
 // Food Bank Manager – Friends of Isaac's Food Bank
 // Version and fixed data. Bump APP_VERSION and add to VERSION_HISTORY every release.
-export const APP_VERSION = '1.1';
+export const APP_VERSION = '1.2';
 
 export const VERSION_HISTORY = [
+  ['1.2', '24 Nov 2026', [
+    'Food Bank Manager: your food bank is shown at the top of every screen, with Change.',
+    'Food Bank Manager: the Donation button is gone from inside lists – use "+ New donation list". New "Show / hide completed lists" button.',
+    'Food Bank Manager: new Stock Take tab – count any location (storage or any food bank) and Send to Simon for approval.',
+    'Food Bank Manager: new History tab – choose any food bank to see all its bookings.',
+    'New Report tab (both views): for a food bank and dates – received, donated, given out, booked out and in stock now, item by item.',
+    'New Emergency tab (both views): emergency contacts, edited by Simon in Setup.',
+    "Simon: Requests now include stock takes (yellow); donations are purple; tap a decided request to see it in full and Reopen it to edit and accept again (anything it booked is undone first).",
+    "Simon: his own stock takes are still booked straight away, no request.",
+    'Simon: Setup › Locations has a Default person for each location, chosen from the people who use the app. New Setup › Users list.',
+    'Simon: Stock table can be sorted up or down by Item, each storage location or Total.',
+    'History for one location now loads all its bookings, not just the latest 60.',
+  ]],
   ['1.1', '24 Nov 2026', [
     'Choose Simon or Food Bank Manager when the app opens (for testing – logins will replace this). "Switch view" at the top.',
     "Simon's view: Stock now shows storage only (Main Storage, Container and any storage containers added with '+ Add storage container').",

@@ -11,7 +11,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=1.1">
+<link rel="stylesheet" href="style.css?v=1.2">
 </head>
 <body>
 <header class="top">
@@ -27,11 +27,14 @@
   <button data-tab="requests" data-view="simon">Requests <span id="reqCount" class="badge"></span></button>
   <button data-tab="in" data-view="simon">Book In</button>
   <button data-tab="transfer" data-view="simon">Transfer</button>
-  <button data-tab="take" data-view="simon">Stock Take</button>
+  <button data-tab="take" data-view="both">Stock Take</button>
   <button data-tab="out" data-view="simon">Book Out</button>
-  <button data-tab="history" data-view="simon">History</button>
+  <button data-tab="history" data-view="both">History</button>
+  <button data-tab="report" data-view="both">Report</button>
+  <button data-tab="emergency" data-view="both">Emergency</button>
   <button data-tab="setup" data-view="simon">Setup</button>
 </nav>
+<div id="bankBar" class="bankbar" hidden></div>
 <main id="main">
   <section id="tab-bank" class="tab"></section>
   <section id="tab-stock" class="tab"></section>
@@ -41,6 +44,8 @@
   <section id="tab-take" class="tab"></section>
   <section id="tab-out" class="tab"></section>
   <section id="tab-history" class="tab"></section>
+  <section id="tab-report" class="tab"></section>
+  <section id="tab-emergency" class="tab"></section>
   <section id="tab-setup" class="tab"></section>
 </main>
 <footer class="foot">
@@ -50,6 +55,6 @@
 </footer>
 <div id="modal" class="modal hidden"><div class="box"><button class="x" id="modalX" aria-label="Close">×</button><div id="modalBody"></div></div></div>
 <div id="toast" class="toast hidden"></div>
-<script type="module" src="app.js?v=1.1"></script>
+<script type="module" src="app.js?v=1.2"></script>
 </body>
 </html>

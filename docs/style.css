@@ -118,3 +118,17 @@ th small{display:block;font-weight:600;color:var(--grey)}
 .req{border-left:6px solid var(--blue)}
 .req.don{border-left-color:#8a4fd6}
 .req table td input{width:80px;text-align:right;padding:4px 6px}
+/* v1.2 */
+.bankbar{background:var(--yellow);color:var(--ink);text-align:center;padding:7px 12px;font-weight:700;position:sticky;top:110px;z-index:3}
+.bankbar .link{margin-left:8px}
+@media (max-width:640px){.bankbar{top:100px}}
+.hist.don{border-left:5px solid #8a4fd6;background:#f6f0fd;padding-left:8px}
+.hist.req{cursor:pointer}
+th .sort{border:0;background:none;cursor:pointer;color:var(--green);font-weight:800;padding:0 2px;font-size:12px}
+th .sort.on{color:var(--red)}
+.paper.st{outline:3px solid var(--yellow2);outline-offset:-2px}
+.ec{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.ec .card h3{margin:0 0 4px}
+.ec a.tel{display:inline-block;font-size:20px;font-weight:800;color:var(--green);text-decoration:none;margin-top:4px}
+.rep .stats .stat{cursor:default}
+.req.st{border-left-color:var(--yellow2)}
