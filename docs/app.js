@@ -3,7 +3,7 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, collection, onSnapshot,
-  writeBatch, increment, serverTimestamp, query, orderBy, limit, startAfter, getDocs, getDoc, setDoc, addDoc, deleteDoc, updateDoc, where
+  writeBatch, increment, serverTimestamp, query, orderBy, limit, startAfter, getDocs, getDoc, setDoc, addDoc, deleteDoc, updateDoc, where, arrayUnion
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { FIREBASE_CONFIG } from './firebase-config.js?v=1.2';
 import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.2';
@@ -154,12 +154,13 @@ function firstReady() {
   if (!S.role) chooseRole();
   else { applyView(); if (S.role === 'mgr' && (!S.name || !S.bank)) askName(true); else recordUser(); }
 }
-// keep a record of everyone who has entered a name (shown in Setup › Users)
+// keep a record of everyone who has entered a name (shown in Setup › Users) – one record per name,
+// so several people sharing a tablet are all kept
 async function recordUser() {
   if (!uid || !S.name) return;
   try {
-    const ref = doc(db, 'users', uid); const cur = await getDoc(ref);
-    await setDoc(ref, { name: S.name, role: S.role || '', bank: S.role === 'mgr' ? (S.bank || '') : '', seen: serverTimestamp(), ...(cur.exists() ? {} : { first: serverTimestamp() }) }, { merge: true });
+    const ref = doc(db, 'users', slug(S.name)); const cur = await getDoc(ref);
+    await setDoc(ref, { name: S.name, role: S.role || '', bank: S.role === 'mgr' ? (S.bank || '') : '', seen: serverTimestamp(), devices: arrayUnion(uid), ...(cur.exists() ? {} : { first: serverTimestamp() }) }, { merge: true });
   } catch (e) { console.warn('user record', e); }
 }
 function updateBankBar() {
@@ -564,7 +565,7 @@ function renderSetup() {
   const el = $('#tab-setup');
   if (el.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;   // don't wipe what is being typed
   const people = userNames();
-  const users = Object.values(S.users).sort((a, b) => tsMs(b.seen) - tsMs(a.seen));
+  const users = Object.values(S.users).filter(u => u.devices).sort((a, b) => tsMs(b.seen) - tsMs(a.seen));   // (records without 'devices' are from the first test of v1.2)
   const items = Object.keys(S.items).sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }));
   el.innerHTML = `<h2>Setup</h2>
     <div class="card"><h3 style="margin-top:0">You</h3><p>${S.name ? `Bookings from this device are saved as <b>${esc(S.name)}</b>.` : 'No name set yet.'} <button class="link" id="stName">Change</button></p></div>
@@ -579,9 +580,9 @@ function renderSetup() {
       <div class="row" style="margin-top:10px"><label>New location<input id="newLoc" placeholder="e.g. Bromsgrove"></label><button class="btn sm" id="addLoc">Add location</button></div>
     </div>
     <div class="card"><h3 style="margin-top:0">Users (${people.length})</h3>
-      <p class="small muted">Everyone who has entered a name in the app. A new name is added here as soon as it is used. The same person on two devices shows twice.</p>
-      <div class="tablewrap" style="max-height:40vh"><table><thead><tr><th>Name</th><th>View</th><th>Food bank</th><th>First used</th><th>Last used</th></tr></thead><tbody>
-      ${users.map(u => `<tr><td>${esc(u.name)}</td><td>${u.role === 'mgr' ? 'Food Bank Manager' : u.role === 'simon' ? 'Simon' : '–'}</td><td>${esc(u.bank ? locLabel(u.bank) : '')}</td><td>${u.first ? fmtTs(u.first) : ''}</td><td>${u.seen ? fmtTs(u.seen) : ''}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Nobody recorded yet.</td></tr>'}
+      <p class="small muted">Everyone who has entered a name in the app (from v1.2 on). A new name is added here as soon as it is used.</p>
+      <div class="tablewrap" style="max-height:40vh"><table><thead><tr><th>Name</th><th>View</th><th>Food bank</th><th>Devices</th><th>First used</th><th>Last used</th></tr></thead><tbody>
+      ${users.map(u => `<tr><td>${esc(u.name)}</td><td>${u.role === 'mgr' ? 'Food Bank Manager' : u.role === 'simon' ? 'Simon' : '–'}</td><td>${esc(u.bank ? locLabel(u.bank) : '')}</td><td>${(u.devices || []).length || ''}</td><td>${u.first ? fmtTs(u.first) : ''}</td><td>${u.seen ? fmtTs(u.seen) : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">Nobody recorded yet.</td></tr>'}
       </tbody></table></div></div>
     <div class="card"><h3 style="margin-top:0">Emergency contacts</h3>
       <p class="small muted">Shown in everyone's Emergency tab. Changes save when you leave a box.</p>
