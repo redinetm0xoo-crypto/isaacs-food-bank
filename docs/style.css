@@ -163,3 +163,25 @@ body:has(.micbar:not([hidden])) .foot{padding-bottom:110px}
 .rejcard details{margin-top:6px}
 .hist.rejrow{background:#fdeceb}
 tr.off td{color:#9aa39d}
+/* v1.4 */
+.seg{display:inline-flex;border:2px solid var(--green);border-radius:999px;overflow:hidden;align-self:flex-end}
+.seg button{background:#fff;color:var(--green);border:0;padding:7px 14px;font:inherit;font-weight:700;cursor:pointer}
+.seg button.on{background:var(--green);color:#fff}
+.chart{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:12px 0}
+.chart .ch{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px;align-items:baseline}
+.chart svg.bars{width:100%;height:auto;display:block;margin-top:6px}
+.chart svg text{font-size:13px;fill:#6b746e;font-family:inherit}
+@media(max-width:699px){.chart svg text{font-size:12px}}
+.chart.sm svg text{font-size:16px}
+.chart .gl{stroke:#e6e9e4}
+.chart rect.bar{cursor:pointer}
+.chart rect.in,.key.in{fill:var(--green2);background:var(--green2)}
+.chart rect.out,.key.out{fill:var(--red);background:var(--red)}
+.chart rect.on{fill:#f2b84b}
+.key{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.chart .cap{min-height:18px;margin:2px 0 4px}
+.chart table.figs td,.chart table.figs th{text-align:right}
+.chart table.figs td:first-child,.chart table.figs th:first-child{text-align:left}
+.chart table.figs tr.tot td{font-weight:800;border-top:2px solid var(--line)}
+.chart details .tablewrap{max-height:560px}
+.chartgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:0 14px}

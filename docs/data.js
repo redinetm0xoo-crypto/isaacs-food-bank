@@ -1,8 +1,16 @@
 // Food Bank Manager – Friends of Isaac's Food Bank
 // Version and fixed data. Bump APP_VERSION and add to VERSION_HISTORY every release.
-export const APP_VERSION = '1.3';
+export const APP_VERSION = '1.4';
 
 export const VERSION_HISTORY = [
+  ['1.4', '25 Nov 2026', [
+    'Report for Food Bank Managers: one graph of items booked into a food bank this year, Weekly or Monthly. Only food banks can be chosen.',
+    "Report for Simon: graphs above the food bank report – Main Storage in and out, other storage in and out, all food banks booked in and given out, and each food bank on its own. Weekly, Monthly or Yearly, tap a bar for its figure, table of figures underneath.",
+    'A Food Bank Manager can have up to 10 draft shopping lists and 3 draft donation lists open at once.',
+    'Lists: the Save button has gone – lists save automatically, and straight away when you switch tab or leave the app.',
+    'Setup: "Default person" removed from Locations – each person\'s default food bank is set in Users.',
+    'Setup › Backup: Import backup makes the live data exactly match a backup file (asks three times first). Every download and every import also keeps a copy inside Firebase that only an admin can see.',
+  ]],
   ['1.3', '24 Nov 2026', [
     'Users are now set up by Simon in Setup › Users (name and default food bank). A Food Bank Manager picks their name from a list instead of typing it, and starts on their default food bank.',
     "If Simon doesn't accept a request, it goes back to the person who sent it: a red number on the tab, a red bar at the top and a message. Shopping and donation lists show in the Food Bank tab, highlighted with Simon's note – \"Change it and send again\" or \"OK, remove\". Stock takes show at the top of the Stock Take tab – \"Count again\" fills in the last counts.",

@@ -3,10 +3,10 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, collection, onSnapshot,
-  writeBatch, increment, serverTimestamp, query, orderBy, limit, startAfter, getDocs, getDoc, setDoc, addDoc, deleteDoc, updateDoc, where, arrayUnion
+  writeBatch, increment, serverTimestamp, query, orderBy, limit, startAfter, getDocs, getDoc, setDoc, addDoc, deleteDoc, updateDoc, where, arrayUnion, Timestamp
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
-import { FIREBASE_CONFIG } from './firebase-config.js?v=1.3';
-import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.3';
+import { FIREBASE_CONFIG } from './firebase-config.js?v=1.4';
+import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.4';
 
 // ---------- helpers ----------
 const $ = (s, el = document) => el.querySelector(s);
@@ -128,6 +128,7 @@ function applyView() {
 }
 $('#btnView').onclick = () => chooseRole();
 function showTab(t) {
+  flushLists();
   if (!tabIn(t)) t = viewOf() === 'mgr' ? 'bank' : 'stock';
   current = t;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
@@ -620,11 +621,10 @@ function renderSetup() {
   const items = Object.keys(S.items).sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }));
   el.innerHTML = `<h2>Setup</h2>
     <div class="card"><h3 style="margin-top:0">Locations</h3>
-      <div class="tablewrap"><table><thead><tr><th>Name</th><th>Type</th><th>Food bank / site name</th><th>Address</th><th>Default person</th><th>In use</th></tr></thead><tbody>
+      <div class="tablewrap"><table><thead><tr><th>Name</th><th>Type</th><th>Food bank / site name</th><th>Address</th><th>In use</th></tr></thead><tbody>
       ${locNames(true).map(n => { const L = S.locs[n]; return `<tr data-l="${esc(n)}"><td>${esc(n)}</td>
         <td><select data-f="kind"><option value="store" ${L.kind === 'store' ? 'selected' : ''}>Storage</option><option value="bank" ${L.kind === 'bank' ? 'selected' : ''}>Food bank</option><option value="other" ${L.kind === 'other' ? 'selected' : ''}>Other</option><option value="donation" ${L.kind === 'donation' ? 'selected' : ''}>Direct donations</option></select></td>
         <td><input data-f="site" value="${esc(L.site || '')}"></td><td><input data-f="addr" value="${esc(L.addr || '')}" style="min-width:260px"></td>
-        <td><select data-f="person"><option value="">– none –</option>${[...new Set([...people, ...(L.person ? [L.person] : [])])].map(u => `<option ${u === L.person ? 'selected' : ''}>${esc(u)}</option>`).join('')}</select></td>
         <td><input type="checkbox" data-f="a" ${L.a !== false ? 'checked' : ''}></td></tr>`; }).join('')}
       </tbody></table></div>
       <div class="row" style="margin-top:10px"><label>New location<input id="newLoc" placeholder="e.g. Bromsgrove"></label><button class="btn sm" id="addLoc">Add location</button></div>
@@ -646,7 +646,10 @@ function renderSetup() {
       <div class="row"><label>New item<input id="newItem"></label><button class="btn sm" id="addItem">Add item</button><label>Search<input id="itQ"></label></div>
       <div class="tablewrap" style="max-height:50vh;margin-top:10px"><table><thead><tr><th>Item</th><th>Total stock</th><th>In use</th></tr></thead><tbody id="itRows"></tbody></table></div>
     </div>
-    <div class="card"><h3 style="margin-top:0">Backup</h3><p class="small muted">Downloads everything (items, locations, stock and all bookings) as one file.</p><button class="btn g sm" id="bk">Download backup</button></div>`;
+    <div class="card"><h3 style="margin-top:0">Backup</h3>
+      <p class="small muted"><b>Download backup</b> saves everything (items, locations, donors, stock, lists, users, contacts and all bookings) as one file, and also keeps a copy inside Firebase that only an admin can see.<br>
+      <b>Import backup</b> makes the live data exactly the same as a backup file – for everyone. Anything added since that backup is deleted. A copy of the data as it is now is downloaded and kept in Firebase first.</p>
+      <button class="btn g sm" id="bk">Download backup</button> <button class="btn r sm" id="bkIn">Import backup…</button><input type="file" id="bkFile" accept=".json,application/json" hidden></div>`;
   const drawItems = q => { $('#itRows', el).innerHTML = items.filter(i => !q || i.toLowerCase().includes(q)).map(i => { const t = num(locNames(true).reduce((a, l) => a + qty(l, i), 0)); return `<tr><td>${esc(i)}</td><td class="${t < 0 ? 'neg' : ''}">${t}</td><td><input type="checkbox" data-item="${esc(i)}" ${S.items[i].a !== false ? 'checked' : ''}></td></tr>`; }).join(''); };
   drawItems('');
   $('#itQ', el).oninput = e => drawItems(e.target.value.toLowerCase());
@@ -687,23 +690,151 @@ function renderSetup() {
   $('#itRows', el).addEventListener('change', e => { const i = e.target.dataset.item; if (i) setDoc(doc(db, 'config', 'items'), { i: { [i]: { a: e.target.checked } } }, { merge: true }).then(() => toast('Saved')); });
   $('#bk', el).onclick = async () => {
     toast('Preparing backup…');
-    const mv = await getDocs(collection(db, 'movements'));
-    const ts = o => JSON.parse(JSON.stringify(o, (k, v) => v && typeof v === 'object' && 'seconds' in v && 'nanoseconds' in v ? new Date(v.seconds * 1000).toISOString() : v));
-    const data = { app: 'Food Bank Manager', version: APP_VERSION, exported: new Date().toISOString(), items: S.items, locations: S.locs, donors: S.donors, stock: S.stock, lists: ts(S.lists), users: ts(S.users), emergency: S.emergency, movements: mv.docs.map(d => ({ id: d.id, ...d.data(), created: d.data().created?.toDate?.().toISOString?.() || null, voidedAt: d.data().voidedAt?.toDate?.().toISOString?.() || undefined })) };
-    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' })), download: `Food Bank backup ${today()} v${APP_VERSION}.json` });
-    a.click();
+    try {
+      const data = await collectBackup();
+      downloadJson(data, `Food Bank backup ${today()} v${APP_VERSION}.json`);
+      await saveFirebaseBackup(data, 'download');
+      toast('Backup downloaded and a copy kept in Firebase');
+    } catch (e) { toast('Backup failed: ' + e.message, 6000); }
   };
+  $('#bkIn', el).onclick = () => { $('#bkFile', el).value = ''; $('#bkFile', el).click(); };
+  $('#bkFile', el).onchange = e => { const f = e.target.files[0]; if (f) importBackup(f); };
+}
+
+// ---------- Backups (v1.4): download, copy kept inside Firebase, import ----------
+// A backup file is the same format as Download backup has always made (v1.0 on): times are written as ISO text.
+const BK_COLS = ['movements', 'lists', 'users', 'stock'];
+const tsJson = o => JSON.parse(JSON.stringify(o, (k, v) => v && typeof v === 'object' && 'seconds' in v && 'nanoseconds' in v ? new Date(v.seconds * 1000 + Math.floor(v.nanoseconds / 1e6)).toISOString() : v));
+const ISO_RE = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/;
+// ISO text back into Firebase times when importing
+const revive = o => Array.isArray(o) ? o.map(revive) : o && typeof o === 'object' ? Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined).map(([k, v]) => [k, revive(v)])) : typeof o === 'string' && ISO_RE.test(o) ? Timestamp.fromDate(new Date(o)) : o;
+const stable = o => JSON.stringify(o, (k, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map(x => [x, v[x]])) : v);
+async function collectBackup() {
+  const [cfg, st, li, us, mv] = await Promise.all(['config', 'stock', 'lists', 'users', 'movements'].map(c => getDocs(collection(db, c))));
+  const C = {}; cfg.forEach(d => { C[d.id] = d.data(); });
+  const stock = {}; st.forEach(d => { const v = d.data(); stock[v.loc] = v.q || {}; });
+  const users = {}; us.forEach(d => { users[d.id] = d.data(); });
+  return tsJson({ app: 'Food Bank Manager', version: APP_VERSION, exported: new Date().toISOString(),
+    items: C.items?.i || {}, locations: C.locations?.l || {}, donors: C.donors?.d || {}, emergency: C.emergency?.c || [], meta: C.meta || null,
+    stock, lists: li.docs.map(d => ({ id: d.id, ...d.data() })), users, movements: mv.docs.map(d => ({ id: d.id, ...d.data() })) });
+}
+function downloadJson(data, name) {
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' })), download: name });
+  document.body.append(a); a.click(); a.remove();
+}
+function bkSummary(d) {
+  const totals = Object.fromEntries(Object.entries(d.stock || {}).map(([l, q]) => [l, Math.round(Object.values(q).reduce((a, b) => a + num(b), 0))]));
+  return { bookings: (d.movements || []).length, lists: (d.lists || []).length, users: Object.keys(d.users || {}).length, items: Object.keys(d.items || {}).length, locations: Object.keys(d.locations || {}).length, totals };
+}
+// copy kept inside Firebase (collection "backups"): the app can only add these – it can't read, change or delete them
+async function saveFirebaseBackup(data, reason) {
+  const s = JSON.stringify(data), size = 300000, n = Math.ceil(s.length / size);
+  const id = new Date().toISOString().replace(/[:.]/g, '-') + '-' + slug(S.name || 'unknown');
+  for (let k = 0; k < n; k++) await setDoc(doc(db, 'backups', id, 'parts', String(k).padStart(3, '0')), { k, n, data: s.slice(k * size, (k + 1) * size) });
+  const sm = bkSummary(data);
+  await setDoc(doc(db, 'backups', id), { at: serverTimestamp(), by: S.name || '', ver: APP_VERSION, reason, parts: n, chars: s.length, taken: data.exported || '', counts: { bookings: sm.bookings, lists: sm.lists, users: sm.users, items: sm.items }, totals: sm.totals });
+  return id;
+}
+async function importBackup(file) {
+  let data;
+  try { data = JSON.parse(await file.text()); } catch { return toast("That file isn't a backup (it can't be read)", 6000); }
+  if (data?.app !== 'Food Bank Manager' || !Array.isArray(data.movements) || !Array.isArray(data.lists) || !data.items || !data.locations || !data.stock || !data.users)
+    return toast("That file isn't a Food Bank Manager backup made with Download backup", 7000);
+  const m = modal('<h2>Import backup</h2><p class="muted">Reading the live data to compare…</p>', { locked: true });
+  let cur;
+  try { cur = await collectBackup(); } catch (e) { closeModal(); return toast('Could not read the live data: ' + e.message, 6000); }
+  const A = bkSummary(data), B = bkSummary(cur);
+  const gone = { bookings: cur.movements.filter(x => !data.movements.some(y => y.id === x.id)).length, lists: cur.lists.filter(x => !data.lists.some(y => y.id === x.id)).length, users: Object.keys(cur.users).filter(x => !(x in data.users)).length };
+  const locs = [...new Set([...Object.keys(A.totals), ...Object.keys(B.totals)])].sort();
+  const row = (k, lab) => `<tr><td>${lab}</td><td>${A[k]}</td><td>${B[k]}</td></tr>`;
+  m.innerHTML = `<h2>Import backup</h2>
+    <p>Backup taken <b>${data.exported ? new Date(data.exported).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }) : 'date not known'}</b>${data.version ? ' (app v' + esc(String(data.version)) + ')' : ''}.</p>
+    <div class="tablewrap"><table><thead><tr><th></th><th>In the backup</th><th>Live now</th></tr></thead><tbody>
+      ${row('bookings', 'Bookings')}${row('lists', 'Lists / requests')}${row('users', 'Users')}${row('items', 'Items')}${row('locations', 'Locations')}
+      ${locs.map(l => `<tr><td>Stock – ${esc(l)}</td><td>${A.totals[l] ?? '–'}</td><td>${B.totals[l] ?? '–'}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="warn">Importing makes the live data exactly the same as the backup, for everyone. It deletes ${gone.bookings} booking${gone.bookings === 1 ? '' : 's'}, ${gone.lists} list${gone.lists === 1 ? '' : 's'} and ${gone.users} user${gone.users === 1 ? '' : 's'} that are not in the backup.</p>
+    <p class="small muted">First, a copy of the live data is downloaded to this device and kept in Firebase, so this can be undone.</p>
+    <p><button class="btn r" id="imGo">Import</button> <button class="btn g" id="imNo">Cancel</button></p>`;
+  $('#imNo', m).onclick = closeModal;
+  $('#imGo', m).onclick = async () => {
+    if (!confirmBox('Are you sure? Importing replaces ALL the live data for everyone with this backup.')) return;
+    if (!confirmBox(`Are you really sure? ${gone.bookings} booking(s), ${gone.lists} list(s) and ${gone.users} user(s) added since the backup will be deleted.`)) return;
+    if (!confirmBox('Last check – are you sure you want to import this backup now?')) return;
+    await runImport(data, cur, m);
+  };
+}
+async function runImport(data, cur, m) {
+  const say = (h, extra = '') => { m.innerHTML = `<h2>Importing backup</h2><p>${h}</p>${extra}`; };
+  let marker = false;
+  try {
+    say('Saving a copy of the live data first…');
+    downloadJson(cur, `Food Bank backup ${today()} before import v${APP_VERSION}.json`);
+    await saveFirebaseBackup(cur, 'before import');
+    // ops: only what differs from the backup is written or deleted
+    const ops = [];
+    const want = {
+      movements: Object.fromEntries(data.movements.map(({ id, ...v }) => [id, v])),
+      lists: Object.fromEntries(data.lists.map(({ id, ...v }) => [id, v])),
+      users: data.users,
+      stock: Object.fromEntries(Object.entries(data.stock).map(([loc, q]) => [slug(loc), { loc, q }])),
+    };
+    const have = {
+      movements: Object.fromEntries(cur.movements.map(({ id, ...v }) => [id, v])),
+      lists: Object.fromEntries(cur.lists.map(({ id, ...v }) => [id, v])),
+      users: cur.users,
+      stock: Object.fromEntries(Object.entries(cur.stock).map(([loc, q]) => [slug(loc), { loc, q }])),
+    };
+    for (const c of BK_COLS) {
+      for (const id of Object.keys(have[c])) if (!(id in want[c])) ops.push(['del', c, id]);
+      for (const [id, v] of Object.entries(want[c])) if (stable(v) !== stable(have[c][id])) ops.push(['set', c, id, v]);
+    }
+    const cfg = { items: { i: data.items }, locations: { l: data.locations }, donors: { d: data.donors || {} }, emergency: { c: data.emergency || [] }, ...(data.meta ? { meta: data.meta } : {}) };
+    const cfgNow = { items: { i: cur.items }, locations: { l: cur.locations }, donors: { d: cur.donors }, emergency: { c: cur.emergency }, ...(cur.meta ? { meta: cur.meta } : {}) };
+    for (const [id, v] of Object.entries(cfg)) if (stable(v) !== stable(cfgNow[id])) ops.push(['set', 'config', id, v]);
+    // deleting is only allowed by the rules while this marker is in date (15 minutes)
+    await setDoc(doc(db, 'config', 'restore'), { until: Timestamp.fromMillis(Date.now() + 15 * 60000), by: S.name || '', started: serverTimestamp() });
+    marker = true;
+    for (let k = 0; k < ops.length; k += 100) {
+      say(`Writing ${Math.min(k + 100, ops.length)} of ${ops.length} changes…`);
+      const b = writeBatch(db);
+      for (const [op, c, id, v] of ops.slice(k, k + 100)) op === 'del' ? b.delete(doc(db, c, id)) : b.set(doc(db, c, id), revive(v));
+      await b.commit();
+    }
+    await deleteDoc(doc(db, 'config', 'restore')); marker = false;
+    say('Checking the live data now matches the backup…');
+    const after = await collectBackup();
+    const same = c => c === 'stock' ? stable(after.stock) === stable(data.stock) : c === 'users' ? stable(after.users) === stable(data.users)
+      : stable([...after[c]].sort((a, b) => a.id < b.id ? -1 : 1)) === stable([...data[c]].sort((a, b) => a.id < b.id ? -1 : 1));
+    const bad = [...BK_COLS.filter(c => !same(c)), ...(stable(after.items) !== stable(data.items) ? ['items'] : []), ...(stable(after.locations) !== stable(data.locations) ? ['locations'] : [])];
+    const A = bkSummary(after);
+    say(bad.length ? `<span class="warn">Imported, but these don't match the backup exactly: ${bad.join(', ')}. The copy taken before the import is in your downloads and in Firebase.</span>`
+      : `Done – the live data now matches the backup exactly (${ops.length} change${ops.length === 1 ? '' : 's'}).`,
+      `<p class="small muted">${A.bookings} bookings, ${A.lists} lists, ${A.users} users.</p><p><button class="btn" id="imOk">OK</button></p>`);
+    $('#imOk', m).onclick = closeModal;
+  } catch (e) {
+    if (marker) await deleteDoc(doc(db, 'config', 'restore')).catch(() => { });
+    say(`<span class="warn">The import stopped: ${esc(e.message)}</span>`, '<p>The copy of the data from before the import is in your downloads and in Firebase.</p><p><button class="btn" id="imOk">OK</button></p>');
+    $('#imOk', m).onclick = closeModal;
+  }
 }
 
 // ---------- Report (both views): what a food bank received, used and has now ----------
 const R = { loc: '', from: '', to: '', rows: null, totals: null, busy: false };
+// v1.4: food bank managers get one simple graph; Simon gets graphs for everything, above the detailed report
 function renderReport() {
   const el = $('#tab-report');
   if (!S.ready.locs) return;
+  if (viewOf() === 'mgr') return renderMgrReport(el);
+  el.innerHTML = `<h2>Report</h2><div id="sgOut"></div><h2 style="margin-top:28px">Food bank report</h2><div id="rpWrap"></div>`;
+  renderSimonGraphs();
+  renderDetailReport($('#rpWrap'));
+}
+function renderDetailReport(el) {
   const banks = locNames().filter(n => S.locs[n].kind !== 'donation');
   if (!R.loc || !S.locs[R.loc]) R.loc = (S.role === 'mgr' && S.bank) ? S.bank : (bankNames()[0] || banks[0]);
   if (!R.to) { R.to = today(); const d = new Date(); d.setDate(d.getDate() - 30); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); R.from = d.toISOString().slice(0, 10); }
-  el.innerHTML = `<h2>Report</h2><p class="muted">What a food bank received, what went out and what it has now, for the dates you choose. "Given out" comes from stock takes (the count was lower than the app) and Book Out.</p>
+  el.innerHTML = `<p class="muted">What a food bank received, what went out and what it has now, for the dates you choose. "Given out" comes from stock takes (the count was lower than the app) and Book Out.</p>
     <div class="card"><div class="row">
       <label>Food bank<select id="rpLoc">${banks.map(n => `<option value="${esc(n)}" ${n === R.loc ? 'selected' : ''}>${esc(locLabel(n))}</option>`).join('')}</select></label>
       <label>From<input type="date" id="rpFrom" value="${R.from}"></label><label>To<input type="date" id="rpTo" value="${R.to}"></label>
@@ -747,6 +878,112 @@ async function runReport() {
       ${items.map(i => { const r = rows[i] || {}; const n = qty(L, i); return `<tr><td>${esc(i)}</td><td>${c(r.rec)}</td><td>${c(r.don)}</td><td>${c(r.given)}</td><td>${c(r.out)}</td><td>${c(r.sent)}</td><td>${c(r.plus)}</td><td class="tot ${n < 0 ? 'neg' : ''}">${n}</td></tr>`; }).join('') || '<tr><td colspan="8" class="muted">Nothing booked here in this period.</td></tr>'}
       </tbody></table></div>`;
   } catch (e) { out.innerHTML = `<p class="warn">Could not make the report: ${esc(e.message)}</p>`; }
+}
+
+
+// ---------- graphs (v1.4) ----------
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const dUTC = s => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10));
+// the bars for a period: labels plus which bar a booking date falls in (-1 = not shown)
+function periods(mode, year, years) {
+  if (mode === 'year') return { labels: years.map(String), key: s => years.indexOf(+s.slice(0, 4)) };
+  if (mode === 'month') return { labels: [...MONTHS], key: s => +s.slice(0, 4) === year ? +s.slice(5, 7) - 1 : -1 };
+  // weeks start on Monday; the first one is the week with 1 January in it
+  const j1 = Date.UTC(year, 0, 1), start = j1 - ((new Date(j1).getUTCDay() + 6) % 7) * 864e5, end = Date.UTC(year, 11, 31);
+  const labels = []; for (let w = start; w <= end; w += 7 * 864e5) { const d = new Date(w); labels.push(`w/c ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`); }
+  return { labels, key: s => +s.slice(0, 4) === year ? Math.floor((dUTC(s) - start) / (7 * 864e5)) : -1 };
+}
+// what a booking line counts as (units); the spreadsheet's starting stock is never counted
+const isIn = (m, x) => x.q > 0 && m.type !== 'opening' && m.type !== 'stocktake';
+const isOut = (m, x) => x.q < 0 && m.type !== 'opening' && m.type !== 'stocktake';
+const isGiven = (m, x) => x.q < 0 && (m.type === 'stocktake' || m.type === 'out');
+// simple bar chart: one or two series, figure shown when a bar is tapped, table of figures underneath
+function barChart({ title, labels, series, small = false, tableOpen = true }) {
+  // narrower drawing on a phone so the writing stays readable
+  const phone = innerWidth < 700, W = phone ? 420 : small ? 600 : 1000, H = phone ? 240 : small ? 200 : 260, pl = phone ? 34 : 46, pr = 8, pt = 12, pb = 34;
+  const all = series.flatMap(s => s.values), top = Math.max(1, ...all);
+  const step = 10 ** Math.floor(Math.log10(top)), nice = [1, 2, 2.5, 5, 10].map(f => f * step).find(v => v >= top) || top;
+  const n = labels.length, gw = (W - pl - pr) / n, bw = Math.max(1, gw * 0.8 / series.length), y = v => pt + (H - pt - pb) * (1 - v / nice);
+  const every = Math.ceil(n / (phone ? 6 : small ? 6 : 13));
+  const bars = labels.map((lab, i) => series.map((s, k) => { const v = s.values[i], yy = y(v); return `<rect class="bar ${s.cls}" x="${(pl + i * gw + gw * 0.1 + k * bw).toFixed(1)}" y="${yy.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0, H - pb - yy).toFixed(1)}" data-t="${esc(lab)}${series.length > 1 ? ' – ' + esc(s.name) : ''}: ${num(v)}"><title>${esc(lab)}${series.length > 1 ? ' – ' + esc(s.name) : ''}: ${num(v)}</title></rect>`; }).join('')).join('');
+  const grid = [0, nice / 2, nice].map(v => `<line x1="${pl}" x2="${W - pr}" y1="${y(v)}" y2="${y(v)}" class="gl"/><text x="${pl - 6}" y="${y(v) + 4}" text-anchor="end">${num(v)}</text>`).join('');
+  const xl = labels.map((lab, i) => i % every ? '' : `<text x="${(pl + i * gw + gw / 2).toFixed(1)}" y="${H - pb + 16}" text-anchor="middle">${esc(lab.replace('w/c ', ''))}</text>`).join('');
+  const tot = series.map(s => s.values.reduce((a, b) => a + b, 0));
+  return `<div class="chart ${small ? 'sm' : ''}"><div class="ch"><b>${esc(title)}</b><span class="small muted">${series.map((s, k) => `<span class="key ${s.cls}"></span>${esc(s.name)} ${num(tot[k])}`).join(' &nbsp; ')}</span></div>
+    <svg class="bars" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(title)}">${grid}${bars}${xl}</svg>
+    <div class="cap small muted">Tap a bar to see its figure</div>
+    <details ${tableOpen ? 'open' : ''}><summary class="small">Figures</summary><div class="tablewrap"><table class="figs"><thead><tr><th></th>${series.map(s => `<th>${esc(s.name)}</th>`).join('')}</tr></thead><tbody>
+      ${labels.map((lab, i) => `<tr><td>${esc(lab)}</td>${series.map(s => `<td>${s.values[i] ? num(s.values[i]) : '<span class="muted">–</span>'}</td>`).join('')}</tr>`).join('')}
+      <tr class="tot"><td>Total</td>${tot.map(v => `<td>${num(v)}</td>`).join('')}</tr></tbody></table></div></details></div>`;
+}
+document.addEventListener('click', e => { const r = e.target.closest?.('svg.bars rect.bar'); if (!r) return; const c = r.closest('.chart'); c.querySelectorAll('rect.on').forEach(x => x.classList.remove('on')); r.classList.add('on'); $('.cap', c).textContent = r.dataset.t; });
+const modeBtns = (cur, modes) => `<span class="seg">${modes.map(([k, lab]) => `<button class="${k === cur ? 'on' : ''}" data-mode="${k}">${lab}</button>`).join('')}</span>`;
+
+// Food Bank Manager: items booked into one food bank this year
+const MR = { loc: '', mode: 'week' };
+function renderMgrReport(el) {
+  const banks = bankNames();
+  if (!MR.loc || !banks.includes(MR.loc)) MR.loc = banks.includes(S.bank) ? S.bank : banks[0];
+  const year = new Date().getFullYear();
+  el.innerHTML = `<h2>Report</h2><p class="muted">How many items were booked into the food bank in ${year} – deliveries from storage and direct donations.</p>
+    <div class="card"><div class="row"><label>Food bank<select id="mrLoc">${banks.map(n => `<option value="${esc(n)}" ${n === MR.loc ? 'selected' : ''}>${esc(locLabel(n))}</option>`).join('')}</select></label>${modeBtns(MR.mode, [['week', 'Weekly'], ['month', 'Monthly']])}</div></div>
+    <div id="mrOut"></div>`;
+  $('#mrLoc', el).onchange = e => { MR.loc = e.target.value; drawMgrReport(); };
+  el.querySelector('.seg').onclick = e => { const m = e.target.dataset.mode; if (m) { MR.mode = m; renderMgrReport(el); } };
+  drawMgrReport();
+}
+async function drawMgrReport() {
+  const out = $('#mrOut'); if (!out) return;
+  out.innerHTML = '<p class="muted">Working it out…</p>';
+  const L = MR.loc, year = new Date().getFullYear(), P = periods(MR.mode, year, []), vals = new Array(P.labels.length).fill(0);
+  try {
+    const qs = await getDocs(query(collection(db, 'movements'), where('locs', 'array-contains', L)));
+    qs.forEach(d => { const m = d.data(); if (m.voided) return; const i = P.key(m.date || ''); if (i < 0 || i >= vals.length) return; for (const x of m.lines) if (x.l === L && isIn(m, x)) vals[i] += x.q; });
+    if ($('#mrOut') !== out || MR.loc !== L) return;
+    out.innerHTML = barChart({ title: `${locLabel(L)} – items booked in, ${year}`, labels: P.labels, series: [{ name: 'Booked in', cls: 'in', values: vals.map(num) }], tableOpen: MR.mode === 'month' });
+  } catch (e) { out.innerHTML = `<p class="warn">Could not make the graph: ${esc(e.message)}</p>`; }
+}
+
+// Simon: everything – storage in and out, food banks in (together and each one) and given out
+const SG = { mode: 'month', year: new Date().getFullYear(), mv: null, at: 0 };
+async function renderSimonGraphs(reload) {
+  const box = $('#sgOut'); if (!box) return;
+  if (reload || !SG.mv || Date.now() - SG.at > 10 * 60000) {
+    box.innerHTML = '<p class="muted">Loading all bookings…</p>';
+    try { const qs = await getDocs(collection(db, 'movements')); SG.mv = qs.docs.map(d => d.data()).filter(m => !m.voided && m.date); SG.at = Date.now(); }
+    catch (e) { box.innerHTML = `<p class="warn">Could not load the bookings: ${esc(e.message)}</p>`; return; }
+    if ($('#sgOut') !== box) return;
+  }
+  const now = new Date().getFullYear(), first = Math.min(now, ...SG.mv.map(m => +m.date.slice(0, 4)).filter(Boolean));
+  const years = []; for (let y = first; y <= now; y++) years.push(y);
+  if (!years.includes(SG.year)) SG.year = now;
+  const P = periods(SG.mode, SG.year, years), n = P.labels.length, z = () => new Array(n).fill(0);
+  const kind = l => S.locs[l]?.kind, banks = bankNames();
+  const A = { mainIn: z(), mainOut: z(), stIn: z(), stOut: z(), bankIn: z(), given: z(), each: Object.fromEntries(banks.map(b => [b, z()])) };
+  for (const m of SG.mv) {
+    const i = P.key(m.date); if (i < 0 || i >= n) continue;
+    for (const x of m.lines) {
+      const k = kind(x.l);
+      if (k === 'store') { const main = x.l === 'Main Storage'; if (isIn(m, x)) (main ? A.mainIn : A.stIn)[i] += x.q; if (isOut(m, x)) (main ? A.mainOut : A.stOut)[i] -= x.q; }
+      else if (k === 'bank') { if (isIn(m, x)) { A.bankIn[i] += x.q; if (A.each[x.l]) A.each[x.l][i] += x.q; } if (isGiven(m, x)) A.given[i] -= x.q; }
+    }
+  }
+  const r = a => a.map(num), open = SG.mode !== 'week';
+  const others = storeNames().filter(x => x !== 'Main Storage');
+  const per = SG.mode === 'year' ? 'every year' : SG.year;
+  box.innerHTML = `<div class="card"><div class="row">${modeBtns(SG.mode, [['week', 'Weekly'], ['month', 'Monthly'], ['year', 'Yearly']])}
+      ${SG.mode !== 'year' ? `<label style="flex:0 0 auto">Year<select id="sgYear">${years.map(y => `<option ${y === SG.year ? 'selected' : ''}>${y}</option>`).join('')}</select></label>` : ''}
+      <button class="btn g sm" id="sgRe">Refresh</button></div>
+      <p class="small muted" style="margin:8px 0 0">Units. Undone bookings and the starting stock from the spreadsheet are left out. "In" and "out" of storage leave out stock-take differences; "given out" at food banks comes from stock takes (counted lower than the app) and Book Out. The data starts in ${first}${first === 2024 ? ' (April)' : ''}.</p></div>
+    ${barChart({ title: `Main Storage – in and out, ${per}`, labels: P.labels, series: [{ name: 'In', cls: 'in', values: r(A.mainIn) }, { name: 'Out', cls: 'out', values: r(A.mainOut) }], tableOpen: open })}
+    ${others.length ? barChart({ title: `${others.join(', ')} – in and out, ${per}`, labels: P.labels, series: [{ name: 'In', cls: 'in', values: r(A.stIn) }, { name: 'Out', cls: 'out', values: r(A.stOut) }], tableOpen: open }) : ''}
+    ${barChart({ title: `All food banks – items booked in, ${per}`, labels: P.labels, series: [{ name: 'Booked in', cls: 'in', values: r(A.bankIn) }], tableOpen: open })}
+    ${barChart({ title: `All food banks – items given out, ${per}`, labels: P.labels, series: [{ name: 'Given out', cls: 'out', values: r(A.given) }], tableOpen: open })}
+    <h3>Each food bank – items booked in, ${per}</h3>
+    <div class="chartgrid">${banks.map(b => barChart({ title: locLabel(b), labels: P.labels, series: [{ name: 'Booked in', cls: 'in', values: r(A.each[b]) }], small: true, tableOpen: false })).join('')}</div>`;
+  box.querySelector('.seg').onclick = e => { const m = e.target.dataset.mode; if (m) { SG.mode = m; renderSimonGraphs(); } };
+  if ($('#sgYear', box)) $('#sgYear', box).onchange = e => { SG.year = +e.target.value; renderSimonGraphs(); };
+  $('#sgRe', box).onclick = () => renderSimonGraphs(true);
 }
 
 // ---------- Contacts (both views; called Emergency before v1.3 – stored in config/emergency) ----------
@@ -1015,8 +1252,18 @@ function renderBank(force) {
   const hidden = S.showDone ? 0 : S.lists.filter(l => mineList(l) && (l.status === 'accepted' || l.status === 'rejected') && !isRej(l)).length;
   $('#listsNone', el).textContent = (lists.length ? '' : 'No lists yet – press "New shopping list" to start one. ') + (hidden ? `${hidden} completed list${hidden === 1 ? '' : 's'} hidden.` : '');
 }
+const DRAFT_MAX = { list: 10, donation: 3 };
 async function newList(donation) {
   if (!S.name) return pickUser();
+  if (S.role === 'mgr') {
+    const max = donation ? DRAFT_MAX.donation : DRAFT_MAX.list;
+    const open = S.lists.filter(l => l.kind !== 'stocktake' && l.status === 'draft' && !!l.donation === !!donation && l.by === S.name).length;
+    if (open >= max) {
+      const m = modal(`<h2>Too many draft ${donation ? 'donation lists' : 'shopping lists'}</h2><p class="warn">You already have ${open} draft ${donation ? 'donation lists' : 'shopping lists'} – the most you can have open at once is ${max}.</p><p>Finish and submit one, or delete one you don't need, then start a new one.</p><p><button class="btn" id="dmOk">OK</button></p>`);
+      $('#dmOk', m).onclick = closeModal;
+      return;
+    }
+  }
   const to = bankNames().includes(S.bank) ? S.bank : bankNames()[0];
   const from = storeNames().includes('Main Storage') ? 'Main Storage' : storeNames()[0];
   try {
@@ -1063,7 +1310,7 @@ function listCard(l) {
     </div>
     <div class="plines"></div>
     <div class="padd noprint"><input class="it" placeholder="Add an item – start typing"><input type="number" class="qt" min="1" step="1" inputmode="numeric" placeholder="Qty"><button class="btn y sm add" type="button">Add</button>${SR ? `<button class="btn sm mic ${MIC.on && MIC.id === l.id ? 'on' : ''}" type="button" title="Say your items">${MIC.on && MIC.id === l.id ? '■ Stop' : '🎤'}</button>` : ''}</div>
-    <div class="pfoot noprint"><button class="btn sm sv">Save</button><button class="btn sm g sub">Submit</button><button class="link dl">Delete</button><span class="saved"></span></div>`;
+    <div class="pfoot noprint"><button class="btn sm g sub">Submit</button><button class="link dl">Delete</button><span class="saved"></span></div>`;
   drawLines(c, l);
   const mut = fn => mutList(l.id, fn, false);
   c.addEventListener('change', e => {
@@ -1071,14 +1318,16 @@ function listCard(l) {
     if (f) { mut(x => { x[f] = norm(e.target.value); }); drawLines(c, listOf(l.id)); }
     if (k !== undefined) { const q = num(e.target.value); mut(x => { if (q > 0) x.lines[k].q = q; else x.lines.splice(k, 1); }); drawLines(c, listOf(l.id)); }
   });
-  c.addEventListener('input', e => { const k = e.target.dataset.k; if (k !== undefined && num(e.target.value) > 0) mut(x => { x.lines[k].q = num(e.target.value); }); });
+  c.addEventListener('input', e => {
+    const k = e.target.dataset.k; if (k !== undefined && num(e.target.value) > 0) mut(x => { x.lines[k].q = num(e.target.value); });
+    if (e.target.dataset.f === 'donor') mut(x => { x.donor = norm(e.target.value); });   // saved as you type, not only when you leave the box
+  });
   c.addEventListener('click', async e => {
     const t = e.target;
     if (t.dataset.del !== undefined) { mut(x => x.lines.splice(+t.dataset.del, 1)); drawLines(c, listOf(l.id)); }
     else if (t.classList.contains('add')) addLine();
     else if (t.classList.contains('mic')) { if (MIC.on && MIC.id === l.id) micStop(); else micStart(l.id); }
     else if (t.dataset.ok !== undefined) { mut(x => { delete x.lines[+t.dataset.ok].chk; delete x.lines[+t.dataset.ok].heard; }); drawLines(c, listOf(l.id)); }
-    else if (t.classList.contains('sv')) { await saveList(l.id); toast('List saved'); }
     else if (t.classList.contains('dl')) {
       if (!confirmBox('Delete this list? This cannot be undone.')) return;
       clearTimeout(LS.timers[l.id]); delete LS.timers[l.id]; delete LS.local[l.id];
@@ -1139,6 +1388,11 @@ function mutList(id, fn, redraw = true) {
   const c = document.querySelector(`.paper[data-id="${id}"]`); if (redraw && c) drawLines(c, cur);
   return true;
 }
+// v1.4: no Save button – lists save automatically; anything still waiting is saved at once when
+// the person switches tab, switches app or closes the page
+function flushLists() { for (const id of Object.keys(LS.timers)) saveList(id); }
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushLists(); });
+addEventListener('pagehide', flushLists);
 function schedule(id) {
   const c = document.querySelector(`.paper[data-id="${id}"] .saved`); if (c) c.textContent = 'Not saved yet…';
   clearTimeout(LS.timers[id]);
