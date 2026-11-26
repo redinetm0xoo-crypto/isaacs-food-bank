@@ -5,9 +5,9 @@ import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, collection, onSnapshot,
   writeBatch, increment, deleteField, serverTimestamp, query, orderBy, limit, startAfter, getDocs, getDoc, setDoc, addDoc, deleteDoc, updateDoc, where, arrayUnion, Timestamp
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
-import { FIREBASE_CONFIG } from './firebase-config.js?v=1.10';
-import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.10';
-import { Workbook } from './excel.js?v=1.10';
+import { FIREBASE_CONFIG } from './firebase-config.js?v=1.11';
+import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.11';
+import { Workbook } from './excel.js?v=1.11';
 
 // ---------- helpers ----------
 const $ = (s, el = document) => el.querySelector(s);
@@ -45,7 +45,9 @@ const S = {
 const canon = i => { let n = i, k = 0; while (S.items[n]?.into && k++ < 10) n = S.items[n].into; return n; };
 const itemNames = () => Object.keys(S.items).filter(n => S.items[n].a !== false).sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }));
 const kindOrder = { store: 0, bank: 1, other: 2, donation: 3 };
-const locNames = (all = false) => Object.keys(S.locs).filter(n => all || S.locs[n].a !== false)
+// v1.11: a deleted location (del: true) keeps all its data but is left out of every list, view and report
+const isDelLoc = n => !!S.locs[n]?.del;
+const locNames = (all = false) => Object.keys(S.locs).filter(n => !S.locs[n].del && (all || S.locs[n].a !== false))
   .sort((a, b) => (kindOrder[S.locs[a].kind] ?? 3) - (kindOrder[S.locs[b].kind] ?? 3) || (S.locs[a].o ?? 99) - (S.locs[b].o ?? 99) || a.localeCompare(b));
 const qty = (loc, item) => num(S.stock[loc]?.[item] || 0);
 const storeNames = () => locNames().filter(n => S.locs[n].kind === 'store');
@@ -80,15 +82,16 @@ function startListeners() {
   onSnapshot(doc(db, 'config', 'emergency'), s => { S.emergency = s.data()?.c || []; renderEmergency(); });
   onSnapshot(doc(db, 'config', 'meta'), s => { S.meta = s.data() || {}; if (current === 'setup') drawMergeList($('#tab-setup')); });
   onSnapshot(collection(db, 'lists'), qs => { S.lists = qs.docs.map(d => ({ id: d.id, ...d.data() })); S.ready.lists = true; renderBank(); renderRequests(); renderMyTakes(); updateNotices(); });
+  onSnapshot(collection(db, 'suggestions'), qs => { S.sugs = qs.docs.map(d => ({ id: d.id, ...d.data() })); sugBadge(); if (current === 'suggest') renderSuggest(); }, e => console.warn('suggestions', e));
   onSnapshot(collection(db, 'stock'), qs => { const st = {}; qs.forEach(d => { const v = d.data(); st[v.loc] = v.q || {}; }); S.stock = st; S.ready.stock = true; refresh(); });
 }
 
 // ---------- booking ----------
 // lines: [{l: location, i: item, q: signed quantity}]
-function addMovement(b, { type, note, date, lines, extra = {} }) {
+function addMovement(b, { type, note, date, lines, extra = {}, ref }) {
   lines = lines.filter(x => x.q);
   if (!lines.length) throw new Error('Nothing to book.');
-  const mref = doc(collection(db, 'movements'));
+  const mref = ref || doc(collection(db, 'movements'));
   b.set(mref, { date, type, note: note || '', lines, locs: [...new Set(lines.map(x => x.l))], by: S.name || '', uid, created: serverTimestamp(), ...extra });
   applyStock(b, lines, 1);
   // new items go into the item list automatically
@@ -113,6 +116,11 @@ async function voidMovement(id, data) {
   const b = writeBatch(db);
   b.set(doc(db, 'movements', id), { voided: true, voidedBy: S.name || '', voidedAt: serverTimestamp() }, { merge: true });
   applyStock(b, data.lines, -1);
+  // v1.11: a direct donation booked in is two bookings (into Donation, then on to the food bank) – undo both
+  if (data.pair) {
+    const p = await getDoc(doc(db, 'movements', data.pair));
+    if (p.exists() && !p.data().voided) { b.set(doc(db, 'movements', data.pair), { voided: true, voidedBy: S.name || '', voidedAt: serverTimestamp() }, { merge: true }); applyStock(b, p.data().lines, -1); }
+  }
   if (data.merge?.from) b.set(doc(db, 'config', 'items'), { i: { [data.merge.from]: { a: true, into: '' } } }, { merge: true });   // undoing an item merge
   await b.commit();
 }
@@ -121,7 +129,8 @@ async function voidMovement(id, data) {
 let current = '';
 $('#tabs').addEventListener('click', e => { const t = e.target.closest('button')?.dataset.tab; if (t) showTab(t); });
 const viewOf = () => S.role === 'mgr' ? 'mgr' : 'simon';
-const tabIn = (t) => { const v = $(`#tabs button[data-tab="${t}"]`)?.dataset.view; return v === 'both' || v === viewOf(); };
+const tabIn = (t) => { if (t === 'suggest') return viewOf() === 'simon';   // v1.11: Review suggestions – opened from the link at the bottom
+  const v = $(`#tabs button[data-tab="${t}"]`)?.dataset.view; return v === 'both' || v === viewOf(); };
 function applyView() {
   document.querySelectorAll('#tabs button').forEach(b => { b.hidden = !(b.dataset.view === 'both' || b.dataset.view === viewOf()); });
   // manager: stock take and history start on their own food bank
@@ -130,6 +139,7 @@ function applyView() {
   $('#btnView').textContent = 'Switch view: ' + (S.role === 'mgr' ? 'Food Bank Manager' : 'Simon');
   showTab(viewOf() === 'mgr' ? 'bank' : 'stock');
   showWho(); updateNotices(); renderMyTakes();
+  $('#sgLinks').hidden = viewOf() !== 'simon';
 }
 $('#btnView').onclick = () => chooseRole();
 function showTab(t) {
@@ -145,10 +155,16 @@ function showTab(t) {
   if (t === 'requests') renderRequests();
   if (t === 'report') renderReport();
   if (t === 'emergency') renderEmergency();
+  if (t === 'suggest') renderSuggest();
   scrollTo({ top: 0 });
 }
 function refresh() {
   if (!(S.ready.items && S.ready.locs && S.ready.stock)) { $('#tab-stock').innerHTML = '<p class="muted">Loading stock…</p>'; return; }
+  // v1.11: a food bank manager whose food bank has been deleted moves to their default (or the first food bank)
+  if (S.role === 'mgr' && S.bank && isDelLoc(S.bank)) {
+    const banks = bankNames(); S.bank = banks.includes(S.bankDef) ? S.bankDef : banks[0] || '';
+    localStorage.setItem('fbm.bank', S.bank); if (refresh.once) { applyView(); toast(S.bank ? `Your food bank was deleted – now on ${S.bank}` : 'Your food bank was deleted', 6000); }
+  }
   fillLocSelects(); renderStock(); renderLinesAvail();
   if (current === 'take') renderTakeTable();
   if (current === 'setup') renderSetup();
@@ -179,7 +195,7 @@ async function openLink() {
   if (l.kind === 'stocktake') return acceptRequest(l, c);   // asks its own question (adjustments to book)
   const units = l.lines.reduce((a, x) => a + (Number(x.q) || 0), 0);
   const where = l.donation ? `donation to ${l.to}` : `${l.from} → ${l.to}`;
-  if (!confirmBox(`Accept this ${l.donation ? 'donation list' : 'shopping list'} from ${l.by || '?'} as asked?\n\n${where}\n${l.lines.length} item${l.lines.length === 1 ? '' : 's'}, ${units} units`)) return toast('Not accepted – it is still waiting in Requests', 5000);
+  if (!confirmBox(`Accept this ${l.donation ? 'donation list' : 'shopping list'} from ${l.by || '?'} as asked?\n\n${where}\n${l.lines.length} item${l.lines.length === 1 ? '' : 's'}, ${units} units`)) return toast('Not accepted – it is still waiting in Approvals', 5000);
   acceptRequest(l, c);
 }
 addEventListener('hashchange', () => { LINK = parseLink(); if (LINK && refresh.once) openLink(); });
@@ -195,6 +211,7 @@ async function recordUser() {
   if (!uid || !S.name) return;
   try {
     const ref = doc(db, 'users', slug(S.name)); const cur = await getDoc(ref);
+    if (S.role === 'mgr' && !cur.exists()) return;   // v1.11: deleted by Simon – don't put them back (they are asked who they are)
     // v1.3: the default food bank belongs to Simon's Setup › Users, so it is not written here
     await setDoc(ref, { name: S.name, role: S.role || '', seen: serverTimestamp(), devices: arrayUnion(uid), ...(cur.exists() ? {} : { first: serverTimestamp() }) }, { merge: true });
   } catch (e) { console.warn('user record', e); }
@@ -214,7 +231,7 @@ function locOptions(sel, filter = () => true) { return locNames().filter(filter)
 function fillLocSelects() {
   document.querySelectorAll('select[data-locs]').forEach(s => {
     const v = s.value || s.dataset.def; const f = s.dataset.locs;
-    s.innerHTML = locOptions(v, n => f === 'all' || (f === 'banks' ? S.locs[n].kind !== 'store' : true));
+    s.innerHTML = locOptions(v, n => f === 'banks' ? S.locs[n].kind === 'bank' : S.locs[n].kind !== 'donation');   // v1.11: the Donation location is never picked by hand
     if (!s.value && s.options.length) s.selectedIndex = 0;
   });
 }
@@ -247,7 +264,7 @@ function onUsers() {
   const u = userRec(S.name);
   if (!u || u.active === false || isSimonUser(u)) { if (!$('#puName')) pickUser(); return; }   // not on Simon's list (or taken off it)
   // Simon changed this person's default food bank – use the new one
-  if (u.bank && u.bank !== S.bankDef) { S.bank = u.bank; S.bankDef = u.bank; localStorage.setItem('fbm.bank', S.bank); localStorage.setItem('fbm.bankDef', S.bankDef); applyView(); renderBank(true); }
+  if (u.bank && !isDelLoc(u.bank) && u.bank !== S.bankDef) { S.bank = u.bank; S.bankDef = u.bank; localStorage.setItem('fbm.bank', S.bank); localStorage.setItem('fbm.bankDef', S.bankDef); applyView(); renderBank(true); }
 }
 function pickUser() {
   const us = activeUsers();
@@ -419,7 +436,7 @@ function initIn() {
   const el = $('#tab-in');
   el.innerHTML = `<h2>Book In</h2><div class="card">
     <div class="row">
-      <label>Type<select id="inType"><option value="donation">Donation</option><option value="purchase">Purchased</option><option value="other">Other</option></select></label>
+      <label>Type<select id="inType"><option value="donation">Donation</option><option value="direct">Direct donation</option><option value="purchase">Purchased</option><option value="other">Other</option></select></label>
       <label>Into<select id="inLoc" data-locs="all" data-def="Main Storage"></select></label>
       <label>Date<input type="date" id="inDate" value="${today()}"></label>
     </div>
@@ -427,13 +444,33 @@ function initIn() {
     <h3>Items</h3><div id="inLines"></div>
     <p><button class="btn" id="inSave">Book in</button></p></div>`;
   const ed = lineEditor($('#inLines', el));
+  // v1.11: "Direct donation" – a donation that goes straight to a food bank, so Into lists only the food banks
+  const keep = { all: 'Main Storage', banks: 'Greenland' };
+  $('#inType', el).onchange = e => {
+    const s = $('#inLoc', el), f = e.target.value === 'direct' ? 'banks' : 'all';
+    if (s.dataset.locs === f) return;
+    keep[s.dataset.locs] = s.value; s.dataset.locs = f; s.dataset.def = keep[f]; s.value = ''; fillLocSelects();
+  };
   $('#inSave', el).onclick = async () => {
     const lines = ed.get(); if (!lines) return; if (!lines.length) return toast('Add at least one item');
-    const type = $('#inType', el).value, loc = $('#inLoc', el).value, from = norm($('#inFrom', el).value);
-    const note = (type === 'donation' ? 'Donation' : type === 'purchase' ? 'Purchased' : 'Other') + (from ? ' - ' + from : '');
+    const type = $('#inType', el).value, loc = $('#inLoc', el).value, from = norm($('#inFrom', el).value), date = $('#inDate', el).value || today();
+    if (!loc) return toast('Choose where it goes');
     try {
       $('#inSave', el).disabled = true;
-      await book({ type, note, date: $('#inDate', el).value || today(), lines: lines.map(x => ({ l: loc, i: x.i, q: x.q })), extra: from ? { from } : {} });
+      if (type === 'direct') {
+        if (S.locs[loc]?.kind !== 'bank') return toast('Choose a food bank');
+        // booked the same way as an accepted direct donation list: into "Donation", then straight on to the food bank
+        const b = writeBatch(db), r1 = doc(collection(db, 'movements')), r2 = doc(collection(db, 'movements'));
+        if (!S.locs['Donation']) b.set(doc(db, 'config', 'locations'), { l: { Donation: { kind: 'donation', site: 'Direct donations to food banks', addr: '', a: true, o: 90 } } }, { merge: true });
+        addMovement(b, { ref: r1, type: 'donation', note: `Donation - direct to ${loc}${from ? ' from ' + from : ''}`, date, lines: lines.map(x => ({ l: 'Donation', i: x.i, q: x.q })), extra: { from, direct: true, pair: r2.id } });
+        addMovement(b, { ref: r2, type: 'transfer', note: 'Stock Transfer - direct donation', date, lines: lines.flatMap(x => [{ l: 'Donation', i: x.i, q: -x.q }, { l: loc, i: x.i, q: x.q }]), extra: { from: 'Donation', to: loc, direct: true, pair: r1.id } });
+        if (from) b.set(doc(db, 'config', 'donors'), { d: { [from]: increment(1) } }, { merge: true });
+        await b.commit();
+        toast(`Direct donation of ${lines.length} item(s) booked in to ${loc}`); ed.clear(); $('#inFrom', el).value = '';
+        return;
+      }
+      const note = (type === 'donation' ? 'Donation' : type === 'purchase' ? 'Purchased' : 'Other') + (from ? ' - ' + from : '');
+      await book({ type, note, date, lines: lines.map(x => ({ l: loc, i: x.i, q: x.q })), extra: from ? { from } : {} });
       if (from) setDoc(doc(db, 'config', 'donors'), { d: { [from]: increment(1) } }, { merge: true });
       toast(`Booked ${lines.length} item(s) into ${loc}`); ed.clear(); $('#inFrom', el).value = '';
     } catch (e) { toast('Not saved: ' + e.message, 5000); } finally { $('#inSave', el).disabled = false; }
@@ -515,7 +552,7 @@ function initTake() {
     catch (e) { toast('Not saved: ' + e.message, 5000); } finally { $('#tkSave', el).disabled = false; }
   };
 }
-// food bank manager: the count goes to Simon's Requests for approval
+// food bank manager: the count goes to Simon's Approvals
 async function submitTake(loc) {
   const counted = Object.entries(take.counts);
   if (!counted.length) return toast('Type in at least one count');
@@ -642,20 +679,24 @@ async function loadHistory(reset) {
 }
 function drawHistory() {
   const f = H.f;
+  // v1.11: bookings only at deleted locations are not shown; elsewhere a deleted location is not named
   const list = H.docs.slice().sort((a, b) => b.date.localeCompare(a.date) || (b.created?.seconds || 0) - (a.created?.seconds || 0))
-    .filter(d => (!f.loc || d.locs?.includes(f.loc)) && (!f.type || d.type === f.type) &&
+    .filter(d => !histHidden(d) && (!f.loc || d.locs?.includes(f.loc)) && (!f.type || d.type === f.type) &&
       (!f.q || (d.note + ' ' + (d.by || '') + ' ' + d.lines.map(x => x.i).join(' ')).toLowerCase().includes(f.q)));
+  const nm = l => isDelLoc(l) ? '(deleted location)' : l;
   $('#hList').innerHTML = list.map(d => {
     const t = TYPES[d.type] || TYPES.other;
-    const where = d.type === 'transfer' ? `${esc(d.from || d.lines.find(x => x.q < 0)?.l || '')} → ${esc(d.to || [...new Set(d.lines.filter(x => x.q > 0).map(x => x.l))].join(', '))}` : esc((d.locs || []).join(', '));
+    const where = d.type === 'transfer' ? `${esc(nm(d.from || d.lines.find(x => x.q < 0)?.l || ''))} → ${esc(d.to ? nm(d.to) : [...new Set(d.lines.filter(x => x.q > 0).map(x => nm(x.l)))].join(', '))}` : esc((d.locs || []).map(nm).join(', '));
     const units = num(d.lines.filter(x => d.type !== 'transfer' || x.q > 0).reduce((a, x) => a + Math.abs(x.q), 0));
     return `<div class="hist ${d.voided ? 'void' : ''}" data-id="${d.id}"><div class="h1"><b>${fmtDate(d.date)}</b><span class="pill ${t.cls}">${t.label}</span><span>${where}</span></div>
       <div class="small muted">${esc(d.note)} · ${d.type === 'transfer' ? d.lines.filter(x => x.q > 0).length : d.lines.length} lines, ${units} units${d.by ? ' · by ' + esc(d.by) : ''}${d.voided ? ' · UNDONE' : ''}</div></div>`;
   }).join('') || '<p class="muted">Nothing found in the bookings loaded so far. Try "Load older".</p>';
 }
+const histHidden = d => isDelLoc(directTo(d)) || (d.locs || []).every(l => isDelLoc(l) || S.locs[l]?.kind === 'donation') && (d.locs || []).some(isDelLoc)
+  || (d.type === 'transfer' && isDelLoc(d.to) && S.locs[d.from]?.kind === 'donation');
 function movementModal(d) {
   const t = TYPES[d.type] || TYPES.other;
-  const byLoc = {}; d.lines.forEach(x => (byLoc[x.l] ||= []).push(x));
+  const byLoc = {}; d.lines.forEach(x => (byLoc[isDelLoc(x.l) ? '(deleted location)' : x.l] ||= []).push(x));
   const m = modal(`<h2>${t.label} – ${fmtDate(d.date)}</h2><p>${esc(d.note)}${d.by ? `<br><span class="muted">By ${esc(d.by)}</span>` : ''}${d.imported ? '<br><span class="muted small">Imported from the spreadsheet</span>' : ''}${d.voided ? `<br><b class="warn">Undone${d.voidedBy ? ' by ' + esc(d.voidedBy) : ''}</b>` : ''}</p>
     ${Object.entries(byLoc).map(([l, xs]) => `<h3>${esc(locLabel(l))}</h3><table>${xs.map(x => `<tr><td>${esc(x.i)}</td><td class="${x.q < 0 ? 'neg' : ''}">${x.q > 0 ? '+' : ''}${x.q}</td></tr>`).join('')}</table>`).join('')}
     <p class="noprint">${d.type === 'transfer' ? '<button class="btn g" id="mDn">Delivery list</button> ' : ''}${d.voided || S.role === 'mgr' ? '' : '<button class="btn r" id="mUndo">Undo this booking</button>'}</p>`);
@@ -667,7 +708,7 @@ function movementModal(d) {
     if (!confirmBox('Undo this booking? The stock goes back to how it was before it. The booking stays in History, crossed out.')) return;
     if (d.voided) return;
     $('#mUndo', m).disabled = true;
-    try { await voidMovement(d.id, d); d.voided = true; d.voidedBy = S.name; toast('Booking undone'); closeModal(); drawHistory(); } catch (e) { toast('Not undone: ' + e.message, 5000); $('#mUndo', m).disabled = false; }
+    try { await voidMovement(d.id, d); d.voided = true; d.voidedBy = S.name; const p = d.pair && H.docs.find(x => x.id === d.pair); if (p) { p.voided = true; p.voidedBy = S.name; } toast(d.pair ? 'Booking undone – the direct donation in and out of Donation both' : 'Booking undone'); closeModal(); drawHistory(); } catch (e) { toast('Not undone: ' + e.message, 5000); $('#mUndo', m).disabled = false; }
   };
 }
 
@@ -681,21 +722,24 @@ function renderSetup() {
   const banks = bankNames();
   const bankOpts = sel => `<option value="">– none –</option>${banks.map(n => `<option value="${esc(n)}" ${n === sel ? 'selected' : ''}>${esc(locLabel(n))}</option>`).join('')}`;
   const items = Object.keys(S.items).sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }));
+  const dels = Object.keys(S.locs).filter(isDelLoc).sort((a, b) => a.localeCompare(b));
   el.innerHTML = `<h2>Setup</h2>
     <div class="card"><h3 style="margin-top:0">Locations</h3>
-      <div class="tablewrap"><table><thead><tr><th>Name</th><th>Type</th><th>Food bank / site name</th><th>Address</th><th>In use</th></tr></thead><tbody>
+      <div class="tablewrap"><table><thead><tr><th>Name</th><th>Type</th><th>Food bank / site name</th><th>Address</th><th>In use</th><th></th></tr></thead><tbody id="locRows">
       ${locNames(true).map(n => { const L = S.locs[n]; return `<tr data-l="${esc(n)}"><td>${esc(n)}</td>
         <td><select data-f="kind"><option value="store" ${L.kind === 'store' ? 'selected' : ''}>Storage</option><option value="bank" ${L.kind === 'bank' ? 'selected' : ''}>Food bank</option><option value="other" ${L.kind === 'other' ? 'selected' : ''}>Other</option><option value="donation" ${L.kind === 'donation' ? 'selected' : ''}>Direct donations</option></select></td>
         <td><input data-f="site" value="${esc(L.site || '')}"></td><td><input data-f="addr" value="${esc(L.addr || '')}" style="min-width:260px"></td>
-        <td><input type="checkbox" data-f="a" ${L.a !== false ? 'checked' : ''}></td></tr>`; }).join('')}
+        <td><input type="checkbox" data-f="a" ${L.a !== false ? 'checked' : ''}></td><td>${L.kind === 'donation' ? '' : `<button class="link" data-delloc="${esc(n)}">Delete</button>`}</td></tr>`; }).join('')}
       </tbody></table></div>
+      ${dels.length ? `<h4 style="margin:14px 0 6px">Deleted locations</h4><p class="small muted">Not shown anywhere – screens, reports, graphs or the Excel file – but all their bookings are kept. Restore puts a location back with everything.</p>
+      <div class="tablewrap"><table><thead><tr><th>Name</th><th>Type</th><th>Deleted</th><th></th></tr></thead><tbody id="delLocRows">${dels.map(n => { const L = S.locs[n]; return `<tr class="off" data-l="${esc(n)}"><td>${esc(locLabel(n))}</td><td>${({ store: 'Storage', bank: 'Food bank', other: 'Other' })[L.kind] || esc(L.kind || '')}</td><td>${L.delAt ? fmtDate(L.delAt) : ''}${L.delBy ? ' by ' + esc(L.delBy) : ''}</td><td><button class="btn g sm" data-restore="${esc(n)}">Restore</button></td></tr>`; }).join('')}</tbody></table></div>` : ''}
       <div class="row" style="margin-top:10px"><label>New location<input id="newLoc" placeholder="e.g. Bromsgrove"></label><button class="btn sm" id="addLoc">Add location</button></div>
     </div>
     <div class="card"><h3 style="margin-top:0">Users (${people.length})</h3>
-      <p class="small muted">The food bank managers. When someone chooses "Food Bank Manager" they pick their name from this list – they can't type their own – and start on their default food bank. Untick "In use" to take someone off the list (their name stays on everything they did).</p>
+      <p class="small muted">The food bank managers. When someone chooses "Food Bank Manager" they pick their name from this list – they can't type their own – and start on their default food bank. Untick "In use" to take someone off the list for a while; <b>Delete</b> removes them for good. Either way their name stays on everything they did.</p>
       <div class="row"><label>New user's name<input id="nuName" placeholder="e.g. Dave Smith"></label><label>Default food bank<select id="nuBank">${bankOpts('')}</select></label><button class="btn sm" id="nuAdd">Add user</button></div>
-      <div class="tablewrap" style="max-height:50vh;margin-top:10px"><table><thead><tr><th>Name</th><th>Default food bank</th><th>In use</th><th>Last used</th></tr></thead><tbody id="usRows">
-      ${users.map(u => `<tr data-u="${esc(u.id)}" class="${u.active === false ? 'off' : ''}"><td>${esc(u.name)}</td><td><select data-uf="bank">${bankOpts(u.bank || '')}</select></td><td><input type="checkbox" data-uf="active" ${u.active !== false ? 'checked' : ''}></td><td>${u.seen ? fmtTs(u.seen) : '<span class="muted">not yet</span>'}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No users yet – add them above.</td></tr>'}
+      <div class="tablewrap" style="max-height:50vh;margin-top:10px"><table><thead><tr><th>Name</th><th>Default food bank</th><th>In use</th><th>Last used</th><th></th></tr></thead><tbody id="usRows">
+      ${users.map(u => `<tr data-u="${esc(u.id)}" class="${u.active === false ? 'off' : ''}"><td>${esc(u.name)}</td><td><select data-uf="bank">${bankOpts(u.bank || '')}</select></td><td><input type="checkbox" data-uf="active" ${u.active !== false ? 'checked' : ''}></td><td>${u.seen ? fmtTs(u.seen) : '<span class="muted">not yet</span>'}</td><td><button class="link" data-deluser="${esc(u.id)}">Delete</button></td></tr>`).join('') || '<tr><td colspan="5" class="muted">No users yet – add them above.</td></tr>'}
       </tbody></table></div></div>
     <div class="card"><h3 style="margin-top:0">Items (${items.length})</h3>
       <p class="small muted">Untick an item to hide it from the item lists (its stock and history stay). <b>Delete</b> removes an item completely – only when it has no stock anywhere and isn't on a request waiting for you; past bookings keep the name. New items can also be typed straight into a booking.</p>
@@ -718,6 +762,34 @@ function renderSetup() {
     const val = f === 'active' ? e.target.checked : e.target.value;
     setDoc(doc(db, 'users', id), { [f]: val }, { merge: true }).then(() => toast('Saved')).catch(err => toast('Not saved: ' + err.message, 5000));
   });
+  // v1.11: delete a user – asked twice; bookings, lists and stock takes keep their name (it is stored on each one)
+  $('#usRows', el).addEventListener('click', async e => {
+    const id = e.target.dataset.deluser; if (!id) return;
+    const u = S.users[id]; if (!u) return;
+    if (!confirmBox(`Delete ${u.name}?\n\nThey come off the user list. Their name stays on everything they did.`)) return;
+    if (!confirmBox(`Are you sure? This can't be undone.\n\n(You can add ${u.name} again as a new user later.)`)) return;
+    try { await deleteDoc(doc(db, 'users', id)); toast(`Deleted ${u.name}`); }
+    catch (err) { toast('Not deleted: ' + err.message, 6000); }
+  });
+  // v1.11: delete a location – asked twice. Nothing is removed: it is marked deleted and left out of everything.
+  $('#locRows', el).addEventListener('click', async e => {
+    const n = e.target.dataset.delloc; if (!n) return;
+    const st = Object.entries(S.stock[n] || {}).filter(([, q]) => num(q) !== 0);
+    const waiting = S.lists.filter(l => l.status === 'submitted' && (l.to === n || l.from === n || l.loc === n)).map(l => `a ${l.kind === 'stocktake' ? 'stock take' : l.donation ? 'donation list' : 'shopping list'} from ${l.by || '?'}`);
+    const why = [];
+    if (st.length) why.push(`it still has stock (${st.length} item${st.length === 1 ? '' : 's'}, ${num(st.reduce((a, [, q]) => a + num(q), 0))} units) – move or book it out first`);
+    if (waiting.length) why.push(`it is on ${waiting.join(', ')} waiting in Approvals – accept or reject ${waiting.length === 1 ? 'it' : 'them'} first`);
+    if (why.length) return toast(`Can't delete ${n}: ${why.join('; ')}.`, 9000);
+    if (!confirmBox(`Delete ${locLabel(n)}?`)) return;
+    if (!confirmBox(`Are you sure? It will disappear from every screen and report.\n\nIts bookings are kept – Restore (under Deleted locations) brings it back with everything.`)) return;
+    try { await setDoc(doc(db, 'config', 'locations'), { l: { [n]: { del: true, delAt: today(), delBy: S.name || 'Simon' } } }, { merge: true }); toast(`Deleted ${n}`); }
+    catch (err) { toast('Not deleted: ' + err.message, 6000); }
+  });
+  $('#delLocRows', el)?.addEventListener('click', async e => {
+    const n = e.target.dataset.restore; if (!n) return;
+    try { await setDoc(doc(db, 'config', 'locations'), { l: { [n]: { del: false } } }, { merge: true }); toast(`${n} restored`); }
+    catch (err) { toast('Not restored: ' + err.message, 6000); }
+  });
   $('#nuAdd', el).onclick = async () => {
     const n = norm($('#nuName', el).value); if (!n) return $('#nuName', el).focus();
     if (n.toLowerCase() === 'simon') return toast('Simon is already set up – use the Simon view');
@@ -728,14 +800,15 @@ function renderSetup() {
       toast(cur ? `${cur.name} is back on the list` : `${n} added`);
     } catch (err) { toast('Not added: ' + err.message, 5000); }
   };
-  el.querySelector('tbody').addEventListener('change', e => {
+  $('#locRows', el).addEventListener('change', e => {
     const tr = e.target.closest('tr'); const n = tr.dataset.l; const f = e.target.dataset.f; if (!n || !f) return;
     const val = f === 'a' ? e.target.checked : (e.target.value ?? '').trim();
     setDoc(doc(db, 'config', 'locations'), { l: { [n]: { [f]: val } } }, { merge: true }).then(() => toast('Saved'));
   });
   $('#addLoc', el).onclick = () => {
     const n = norm($('#newLoc', el).value); if (!n) return;
-    if (Object.keys(S.locs).some(x => x.toLowerCase() === n.toLowerCase())) return toast('That location already exists');
+    const same = Object.keys(S.locs).find(x => x.toLowerCase() === n.toLowerCase());
+    if (same) return toast(isDelLoc(same) ? `${same} was deleted – use Restore under Deleted locations` : 'That location already exists', 6000);
     setDoc(doc(db, 'config', 'locations'), { l: { [n]: { kind: 'bank', site: '', addr: '', a: true, o: 50 } } }, { merge: true }).then(() => toast('Location added'));
   };
   $('#addItem', el).onclick = () => {
@@ -748,7 +821,7 @@ function renderSetup() {
     const i = e.target.dataset.delitem; if (!i) return;
     const have = locNames(true).filter(l => qty(l, i) !== 0).map(l => `${l} has ${qty(l, i)}`);
     const waiting = S.lists.filter(l => l.status === 'submitted' && (l.lines || []).some(x => x.i === i)).map(l => `${l.kind === 'stocktake' ? 'stock take' : l.donation ? 'donation list' : 'list'} from ${l.by || '?'}`);
-    if (have.length || waiting.length) return toast(`Can't delete ${i}: ${[...have, ...waiting.map(w => 'it is on a ' + w + ' waiting in Requests')].join('; ')}. Untick "In use" to hide it${have.length ? ', or move or book out the stock first' : ''}.`, 9000);
+    if (have.length || waiting.length) return toast(`Can't delete ${i}: ${[...have, ...waiting.map(w => 'it is on a ' + w + ' waiting in Approvals')].join('; ')}. Untick "In use" to hide it${have.length ? ', or move or book out the stock first' : ''}.`, 9000);
     if (!confirmBox(`Delete ${i}?\n\nIt comes off the item list everywhere. Past bookings and reports keep the name. You can add it again with "Add item".`)) return;
     try {
       await setDoc(doc(db, 'config', 'items'), { i: { [i]: deleteField() } }, { merge: true });
@@ -852,13 +925,13 @@ const ISO_RE = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/;
 const revive = o => Array.isArray(o) ? o.map(revive) : o && typeof o === 'object' ? Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined).map(([k, v]) => [k, revive(v)])) : typeof o === 'string' && ISO_RE.test(o) ? Timestamp.fromDate(new Date(o)) : o;
 const stable = o => JSON.stringify(o, (k, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map(x => [x, v[x]])) : v);
 async function collectBackup() {
-  const [cfg, st, li, us, mv] = await Promise.all(['config', 'stock', 'lists', 'users', 'movements'].map(c => getDocs(collection(db, c))));
+  const [cfg, st, li, us, mv, sg] = await Promise.all(['config', 'stock', 'lists', 'users', 'movements', 'suggestions'].map(c => getDocs(collection(db, c))));
   const C = {}; cfg.forEach(d => { C[d.id] = d.data(); });
   const stock = {}; st.forEach(d => { const v = d.data(); stock[v.loc] = v.q || {}; });
   const users = {}; us.forEach(d => { users[d.id] = d.data(); });
   return tsJson({ app: 'Food Bank Manager', version: APP_VERSION, exported: new Date().toISOString(),
     items: C.items?.i || {}, locations: C.locations?.l || {}, donors: C.donors?.d || {}, emergency: C.emergency?.c || [], meta: C.meta || null,
-    stock, lists: li.docs.map(d => ({ id: d.id, ...d.data() })), users, movements: mv.docs.map(d => ({ id: d.id, ...d.data() })) });
+    stock, lists: li.docs.map(d => ({ id: d.id, ...d.data() })), users, movements: mv.docs.map(d => ({ id: d.id, ...d.data() })), suggestions: sg.docs.map(d => ({ id: d.id, ...d.data() })) });
 }
 function downloadJson(data, name) {
   const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' })), download: name });
@@ -1100,7 +1173,19 @@ const SG = { mode: 'month', year: new Date().getFullYear(), mv: null, at: 0 };
 // every booking that counts in reports (not undone, not a merge), loaded once and kept for 10 minutes
 async function allMoves(reload) {
   if (reload || !SG.mv || Date.now() - SG.at > 10 * 60000) { const qs = await getDocs(collection(db, 'movements')); SG.mv = qs.docs.map(d => d.data()).filter(m => !m.voided && !m.merge && m.date); SG.at = Date.now(); }
-  return SG.mv;
+  return visMoves(SG.mv);
+}
+// v1.11: reports, graphs and the Excel file leave out deleted locations – their lines are dropped, and so is a direct
+// donation to a deleted food bank. The bookings themselves are kept (Restore brings them all back).
+const directTo = m => m.type === 'donation' ? (String(m.note || '').match(/direct to (.+?)(?: from |$)/i)?.[1] || '') : '';
+function visMoves(mvs) {
+  if (!Object.values(S.locs).some(L => L.del)) return mvs;
+  return mvs.flatMap(m => {
+    if (isDelLoc(directTo(m)) || (m.type === 'transfer' && isDelLoc(m.to) && S.locs[m.from]?.kind === 'donation')) return [];
+    if (!m.lines.some(x => isDelLoc(x.l))) return [m];
+    const lines = m.lines.filter(x => !isDelLoc(x.l));
+    return lines.length ? [{ ...m, lines, locs: [...new Set(lines.map(x => x.l))] }] : [];
+  });
 }
 // ---------- v1.10: donations by donor ----------
 // Who gave what: donations booked in (Book In "Donation" and the spreadsheet's donation bookings) and the food banks'
@@ -1129,7 +1214,7 @@ function donorReport(mvs, from, to) {
 const DR = { from: '', to: '', who: '' };
 function renderDonorReport(el) {
   if (!DR.to) { DR.to = today(); DR.from = `${new Date().getFullYear()}-01-01`; }
-  el.innerHTML = `<p class="muted">Who has donated what, and how many – donations booked in and the food banks' direct donation lists. Tap a donor to see the items. Names are as typed in "From", so different spellings show as different donors.</p>
+  el.innerHTML = `<p class="muted">Who has donated what, and how many – donations booked in (including direct donations) and the food banks' direct donation lists. Tap a donor to see the items. Names are as typed in "From", so different spellings show as different donors.</p>
     <div class="card"><div class="row">
       <label>From<input type="date" id="drFrom" value="${DR.from}"></label><label>To<input type="date" id="drTo" value="${DR.to}"></label>
       <label>Donor<select id="drWho"><option value="">All donors</option></select></label>
@@ -1170,7 +1255,7 @@ async function renderSimonGraphs(reload) {
   const now = new Date().getFullYear(), first = Math.min(now, ...SG.mv.map(m => +m.date.slice(0, 4)).filter(Boolean));
   const years = []; for (let y = first; y <= now; y++) years.push(y);
   if (!years.includes(SG.year)) SG.year = now;
-  const banks = bankNames(), { P, A } = sgCompute(SG.mv, SG.mode, SG.year, years);
+  const banks = bankNames(), { P, A } = sgCompute(visMoves(SG.mv), SG.mode, SG.year, years);
   const r = a => a.map(num), open = SG.mode !== 'week';
   const others = storeNames().filter(x => x !== 'Main Storage');
   const per = SG.mode === 'year' ? 'every year' : SG.year;
@@ -1183,7 +1268,7 @@ async function renderSimonGraphs(reload) {
     ${barChart({ title: `All food banks – items booked in, ${per}`, labels: P.labels, series: [{ name: 'Booked in', cls: 'in', values: r(A.bankIn) }], tableOpen: open })}
     ${barChart({ title: `All food banks – items given out, ${per}`, labels: P.labels, series: [{ name: 'Given out', cls: 'out', values: r(A.given) }], tableOpen: open })}
     ${barChart({ title: `Donations – booked in, ${per}`, labels: P.labels, series: [{ name: 'Donations', cls: 'don', values: r(A.don) }], tableOpen: open })}
-    ${barChart({ title: `Direct donations – food banks' donation lists, ${per}`, labels: P.labels, series: [{ name: 'Direct donations', cls: 'dir', values: r(A.direct) }], tableOpen: open })}
+    ${barChart({ title: `Direct donations – straight to food banks, ${per}`, labels: P.labels, series: [{ name: 'Direct donations', cls: 'dir', values: r(A.direct) }], tableOpen: open })}
     <h3>Each food bank – direct donations, ${per}</h3>
     <div class="chartgrid">${banks.map(b => barChart({ title: locLabel(b), labels: P.labels, series: [{ name: 'Direct donations', cls: 'dir', values: r(A.eachDirect[b]) }], small: true, tableOpen: false })).join('')}</div>
     <h3>Each food bank – items booked in, ${per}</h3>
@@ -1193,7 +1278,7 @@ async function renderSimonGraphs(reload) {
   $('#sgRe', box).onclick = () => renderSimonGraphs(true);
   $('#sgXl', box).onclick = () => exportExcel($('#sgXl', box));
 }
-const SG_NOTE = 'Units. Undone bookings, item merges and the starting stock from the spreadsheet are left out. "Donations" are donations booked in (Book In and the spreadsheet); "direct donations" are the food banks\' donation lists Simon accepted – each counted once. "In" and "out" of storage leave out stock-take differences; "given out" at food banks comes from stock takes (counted lower than the app) and Book Out.';
+const SG_NOTE = 'Units. Undone bookings, item merges and the starting stock from the spreadsheet are left out. "Donations" are donations booked in (Book In and the spreadsheet); "direct donations" go straight to a food bank – the food banks\' donation lists Simon accepted and Book In "Direct donation" – each counted once. "In" and "out" of storage leave out stock-take differences; "given out" at food banks comes from stock takes (counted lower than the app) and Book Out.';
 // v1.8: the graph figures for one period (used by the graphs on screen and the Excel export)
 function sgCompute(mvs, mode, year, years) {
   const P = periods(mode, year, years), n = P.labels.length, z = () => new Array(n).fill(0);
@@ -1203,7 +1288,7 @@ function sgCompute(mvs, mode, year, years) {
     const i = P.key(m.date); if (i < 0 || i >= n) continue;
     // v1.5: donations booked in (not the ones from food banks' donation lists) and direct donations
     // (food banks' donation lists accepted by Simon: the transfer from Donation to the food bank)
-    const directList = m.type === 'transfer' && m.listId && m.lines.some(y => kind(y.l) === 'donation');
+    const directList = m.type === 'transfer' && (m.listId || m.direct) && m.lines.some(y => kind(y.l) === 'donation');
     for (const x of m.lines) {
       const k = kind(x.l);
       if (m.type === 'donation' && x.q > 0 && k !== 'donation') A.don[i] += x.q;
@@ -1244,7 +1329,7 @@ function buildExcel(mvs, when) {
     { name: 'Food banks booked in', title: 'All food banks – items booked in', series: [['Booked in', 'in', A => A.bankIn]] },
     { name: 'Food banks given out', title: 'All food banks – items given out', series: [['Given out', 'out', A => A.given]] },
     { name: 'Donations', title: 'Donations – booked in', series: [['Donations', 'don', A => A.don]] },
-    { name: 'Direct donations', title: "Direct donations – food banks' donation lists", series: [['Direct donations', 'dir', A => A.direct]] },
+    { name: 'Direct donations', title: 'Direct donations – straight to food banks', series: [['Direct donations', 'dir', A => A.direct]] },
     ...banks.map(b => ({ name: b, title: `${locLabel(b)} – booked in and direct donations`, series: [['Booked in', 'in', A => A.each[b]], ['Direct donations', 'dir', A => A.eachDirect[b]]] })),
   ];
   const stamp = when.toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
@@ -1679,6 +1764,7 @@ function listCard(l) {
       if (unsure) { c.querySelector('.pl.chk')?.scrollIntoView({ block: 'center' }); return toast(`Check the ${unsure} highlighted item${unsure === 1 ? '' : 's'} first – pick the right item, or tap ✓ if it is right`, 6000); }
       if (MIC.on && MIC.id === l.id) micStop();
       if (!cur.to) return toast('Choose a food bank');
+      if (isDelLoc(cur.to) || (!cur.donation && isDelLoc(cur.from))) return toast('That location has been deleted – choose another');
       if (!cur.donation && !cur.from) return toast('Choose where it comes from');
       if (!confirmBox(`Send this ${cur.donation ? 'donation' : 'shopping list'} to Simon? You can't change it after this.`)) return;
       try {
@@ -1763,7 +1849,7 @@ function renderRequests() {
   const typingIn = el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' ? document.activeElement.closest('.req')?.dataset.id : null;
   if (typingIn && pending.some(l => l.id === typingIn)) { el.dataset.stale = '1'; return; }
   const done = S.lists.filter(l => l.status === 'accepted' || l.status === 'rejected').sort((a, b) => tsMs(b.decidedAt) - tsMs(a.decidedAt)).slice(0, 20);
-  el.innerHTML = `<h2>Requests</h2><p class="muted">Shopping lists, donations and stock takes sent by the food banks. Check the figures (change them if you need to), then Accept – that books the stock straight away. Purple = direct donation, yellow = stock take. Tap a decided request to see it in full or reopen it.</p>
+  el.innerHTML = `<h2>Approvals</h2><p class="muted">Shopping lists, donations and stock takes sent by the food banks. Check the figures (change them if you need to), then Accept – that books the stock straight away. Purple = direct donation, yellow = stock take. Tap a decided request to see it in full or reopen it.</p>
     ${pending.map(l => reqCard(l)).join('') || '<div class="card muted">No requests waiting.</div>'}
     ${done.length ? `<h3>Recently decided</h3><div class="card">${done.map(l => { const n = (l.acceptedLines || l.lines).length; return `<div class="hist req ${reqCls(l)}" data-id="${l.id}"><div class="h1"><b>${fmtTs(l.decidedAt)}</b><span class="status ${l.status}">${STATUS[l.status]}</span><span><b>${reqKind(l)}</b> · ${reqWhere(l)}</span></div><div class="small muted">${esc(l.by)} · ${n} item${n === 1 ? '' : 's'}${l.reopened ? ' · reopened ' + l.reopened + '×' : ''}${l.reason ? ' · ' + esc(l.reason) : ''}</div></div>`; }).join('')}</div>` : ''}`;
   el.querySelectorAll('.card.req').forEach(card => {
@@ -1846,7 +1932,7 @@ function requestModal(l) {
     <p>${reqWhere(l)}<br><span class="muted">From ${esc(l.by || '?')}${l.submittedAt ? ', sent ' + fmtTs(l.submittedAt) : ''}${l.donor ? ' · donated by ' + esc(l.donor) : ''}<br>
     ${l.status === 'accepted' ? 'Accepted' : 'Not accepted'} by ${esc(l.decidedBy || 'Simon')} ${l.decidedAt ? fmtTs(l.decidedAt) : ''}${l.reason ? ' – ' + esc(l.reason) : ''}${l.reopened ? `<br>Reopened ${l.reopened}× (last by ${esc(l.reopenedBy || '?')})` : ''}</span></p>
     <table><thead><tr><th>Item</th>${head}</tr></thead><tbody>${l.lines.map(x => { const a = acc.find(y => y.i === x.i); return `<tr><td>${esc(x.i)}</td><td>${x.q}</td><td>${l.status === 'accepted' ? (a ? a.q : 0) : ''}</td></tr>`; }).join('')}</tbody></table>
-    <p class="small muted">${l.status === 'accepted' && (l.movementIds || []).length ? 'Reopening undoes the stock booked when it was accepted, then puts it back in Requests so you can change it and accept it again.' : 'Reopening puts it back in Requests so you can change it and accept it.'}</p>
+    <p class="small muted">${l.status === 'accepted' && (l.movementIds || []).length ? 'Reopening undoes the stock booked when it was accepted, then puts it back in Approvals so you can change it and accept it again.' : 'Reopening puts it back in Approvals so you can change it and accept it.'}</p>
     <p class="noprint"><button class="btn y" id="rqReopen">Reopen to edit</button></p>`);
   $('#rqReopen', m).onclick = async () => {
     if (!confirmBox(l.status === 'accepted' && (l.movementIds || []).length ? 'Reopen this request? The stock booked when it was accepted will be undone first.' : 'Reopen this request?')) return;
@@ -1861,12 +1947,73 @@ function requestModal(l) {
       }
       b.update(doc(db, 'lists', l.id), { status: 'submitted', reopened: increment(1), reopenedBy: S.name || 'Simon', reopenedAt: serverTimestamp() });
       await b.commit();
-      toast('Reopened – it is back in Requests'); closeModal();
+      toast('Reopened – it is back in Approvals'); closeModal();
     } catch (e) { toast('Not reopened: ' + e.message, 5000); $('#rqReopen', m).disabled = false; }
   };
 }
 
-// ---------- footer: version history (the suggestions box was removed in v1.3) ----------
+// ---------- v1.11: suggestions box (Simon only) and Review suggestions ----------
+// Saved in Firebase 'suggestions': text, by, created, status new → accepted / declined → implemented (in vX).
+// Accepted suggestions are built in the next version and marked implemented when it is released.
+const SUG_ST = { new: 'New', accepted: 'Accepted – to be built', declined: 'Declined', implemented: 'Implemented' };
+const sugText = g => g.text ?? g.s ?? g.msg ?? '';
+const sugSt = g => SUG_ST[g.status] ? g.status : 'new';
+function sugBadge() { const n = (S.sugs || []).filter(g => sugSt(g) === 'new').length; $('#sugCount').textContent = n || ''; }
+$('#btnSuggest').onclick = () => {
+  const m = modal(`<h2>Suggestions box</h2><p class="muted">An idea or something to change in the app. It is saved and shown in Review suggestions, where you can edit, accept or decline it. Accepted suggestions are built in the next version.</p>
+    <label>Suggestion<textarea id="sgText" rows="5" style="width:100%"></textarea></label><p><button class="btn" id="sgSend">Save suggestion</button></p>`);
+  $('#sgText', m).focus();
+  $('#sgSend', m).onclick = async () => {
+    const text = $('#sgText', m).value.trim(); if (!text) return $('#sgText', m).focus();
+    $('#sgSend', m).disabled = true;
+    try { await addDoc(collection(db, 'suggestions'), { text, by: S.name || 'Simon', uid, status: 'new', created: serverTimestamp() }); toast('Suggestion saved'); closeModal(); }
+    catch (e) { toast('Not saved: ' + e.message, 6000); $('#sgSend', m).disabled = false; }
+  };
+};
+$('#btnReview').onclick = () => showTab('suggest');
+function renderSuggest() {
+  const el = $('#tab-suggest');
+  if (el.contains(document.activeElement) && document.activeElement.tagName === 'TEXTAREA') return;   // don't wipe an edit
+  const all = (S.sugs || []).slice().sort((a, b) => (b.created?.seconds || 0) - (a.created?.seconds || 0));
+  const card = g => { const st = sugSt(g); return `<div class="card sug" data-id="${esc(g.id)}"><div class="row" style="justify-content:space-between"><b>${g.created ? fmtTs(g.created) : ''}${g.by ? ' · ' + esc(g.by) : ''}</b><span class="pill sg-${st}">${SUG_ST[st]}${st === 'implemented' && g.version ? ' in v' + esc(g.version) : ''}</span></div>
+    <p class="sgt" style="white-space:pre-wrap">${esc(sugText(g))}</p>
+    ${g.decidedBy ? `<p class="small muted">${st === 'declined' ? 'Declined' : 'Accepted'} by ${esc(g.decidedBy)}${g.decidedAt ? ' · ' + fmtTs(g.decidedAt) : ''}${g.edited ? ' · edited' : ''}</p>` : g.edited ? '<p class="small muted">Edited</p>' : ''}
+    ${st === 'implemented' ? '' : `<p class="noprint"><button class="btn g sm" data-a="edit">Edit</button> ${st !== 'accepted' ? '<button class="btn sm" data-a="accepted">Accept</button> ' : ''}${st !== 'declined' ? '<button class="btn r sm" data-a="declined">Decline</button>' : ''}</p>`}</div>`; };
+  const group = (k, head) => { const xs = all.filter(g => sugSt(g) === k); return xs.length ? `<h3>${head} (${xs.length})</h3>${xs.map(card).join('')}` : ''; };
+  el.innerHTML = `<h2>Review suggestions</h2><p class="muted">Edit a suggestion, accept it to have it built in the next version, or decline it. When a version with it is released it is marked Implemented. New ones come from the Suggestions box at the bottom of the page.</p>
+    <p><button class="btn sm" id="sgNew">New suggestion</button></p>
+    ${all.length ? group('new', 'New') + group('accepted', 'Accepted – to be built') + group('implemented', 'Implemented') + group('declined', 'Declined') : '<p class="muted">No suggestions yet.</p>'}`;
+  $('#sgNew', el).onclick = () => $('#btnSuggest').click();
+  el.onclick = async e => {
+    const a = e.target.dataset.a, c = e.target.closest('.sug'); if (!a || !c) return;
+    const g = S.sugs.find(x => x.id === c.dataset.id); if (!g) return;
+    if (a === 'edit') {
+      $('.sgt', c).outerHTML = `<textarea class="sgEd" rows="5" style="width:100%">${esc(sugText(g))}</textarea>`;
+      e.target.parentElement.innerHTML = '<button class="btn sm" data-a="save">Save</button> <button class="btn g sm" data-a="cancel">Cancel</button>';
+      $('.sgEd', c).focus(); return;
+    }
+    if (a === 'cancel') { document.activeElement?.blur(); return renderSuggest(); }
+    try {
+      if (a === 'save') {
+        const text = $('.sgEd', c).value.trim(); if (!text) return toast('The suggestion is empty');
+        document.activeElement?.blur();
+        await updateDoc(doc(db, 'suggestions', g.id), { text, edited: true, editedBy: S.name || 'Simon', updated: serverTimestamp(), status: sugSt(g) });
+        toast('Saved');
+      } else {
+        if (a === 'declined' && !confirmBox('Decline this suggestion? It is kept under Declined and can be accepted later.')) return;
+        await updateDoc(doc(db, 'suggestions', g.id), { status: a, decidedBy: S.name || 'Simon', decidedAt: serverTimestamp() });
+        toast(a === 'accepted' ? 'Accepted – it will be built in the next version' : 'Declined');
+      }
+    } catch (err) { toast('Not saved: ' + err.message, 6000); renderSuggest(); }
+  };
+}
+// the builder marks accepted suggestions implemented when a version with them is released (run from the browser console)
+window.FBM_markImplemented = async (ids, version) => {
+  for (const id of ids) await updateDoc(doc(db, 'suggestions', id), { status: 'implemented', version, implementedAt: serverTimestamp() });
+  return ids.length;
+};
+
+// ---------- footer: version history ----------
 $('#btnVersions').onclick = () => modal(`<h2>Version history</h2>${VERSION_HISTORY.map(([v, d, xs]) => `<h3>v${v} – ${d}</h3><ul>${xs.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`).join('')}`);
 
 // ---------- one-off import of the spreadsheet data (run by the builder from the browser console) ----------

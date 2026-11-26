@@ -1,8 +1,16 @@
 // Food Bank Manager – Friends of Isaac's Food Bank
 // Version and fixed data. Bump APP_VERSION and add to VERSION_HISTORY every release.
-export const APP_VERSION = '1.10';
+export const APP_VERSION = '1.11';
 
 export const VERSION_HISTORY = [
+  ['1.11', '26 Nov 2026', [
+    'Setup › Users: Delete button – asks twice; their name stays on everything they did',
+    'Book In: "Direct donation" is now a Type – Into lists only the food banks, From is the donor; it counts in the Direct donations graphs and the donor report',
+    'Setup › Locations: Delete button – asks twice; refused while it has stock or is on a request waiting for Simon. Nothing is removed: the location is left out of every screen, report, graph and the Excel file, and Deleted locations has a Restore button',
+    'Simon: the Donation location is no longer in the pick lists for Book In, Book Out, Transfer and Stock Take',
+    'Simon: the Requests tab is now called Approvals',
+    'Simon: Suggestions box back at the bottom of the page, with Review suggestions – edit, accept or decline each one; accepted ones are built in the next version and marked Implemented when it is released',
+  ]],
   ['1.10', '26 Nov 2026', [
     'Report (Simon): Donations by donor – who donated what and how many, for any dates, all donors or one; also in Export to Excel (Donors and Donors – items sheets)',
     'Setup › Items: Delete button – only for an item with no stock anywhere that is not on a request waiting for Simon',

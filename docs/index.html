@@ -11,7 +11,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=1.10">
+<link rel="stylesheet" href="style.css?v=1.11">
 </head>
 <body>
 <header class="top">
@@ -24,7 +24,7 @@
 <nav class="tabs" id="tabs">
   <button data-tab="bank" data-view="mgr">Food Bank <span id="bankCount" class="badge"></span></button>
   <button data-tab="stock" data-view="simon">Stock</button>
-  <button data-tab="requests" data-view="simon">Requests <span id="reqCount" class="badge"></span></button>
+  <button data-tab="requests" data-view="simon">Approvals <span id="reqCount" class="badge"></span></button>
   <button data-tab="in" data-view="simon">Book In</button>
   <button data-tab="out" data-view="simon">Book Out</button>
   <button data-tab="transfer" data-view="simon">Transfer</button>
@@ -48,14 +48,15 @@
   <section id="tab-report" class="tab"></section>
   <section id="tab-emergency" class="tab"></section>
   <section id="tab-setup" class="tab"></section>
+  <section id="tab-suggest" class="tab"></section>
 </main>
 <footer class="foot">
-  <button id="btnVersions" class="link">Version history</button>
+  <span id="sgLinks" hidden><button id="btnSuggest" class="link">Suggestions box</button> · <button id="btnReview" class="link">Review suggestions <span id="sugCount" class="badge"></span></button> · </span><button id="btnVersions" class="link">Version history</button>
   <div class="small">Friends of Isaac's Food Bank CIC · Food Bank Manager v<span id="ver"></span></div>
 </footer>
 <div id="modal" class="modal hidden"><div class="box"><button class="x" id="modalX" aria-label="Close">×</button><div id="modalBody"></div></div></div>
 <div id="toast" class="toast hidden"></div>
 <div id="micBar" class="micbar" hidden></div>
-<script type="module" src="app.js?v=1.10"></script>
+<script type="module" src="app.js?v=1.11"></script>
 </body>
 </html>
