@@ -5,9 +5,9 @@ import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, collection, onSnapshot,
   writeBatch, increment, serverTimestamp, query, orderBy, limit, startAfter, getDocs, getDoc, setDoc, addDoc, deleteDoc, updateDoc, where, arrayUnion, Timestamp
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
-import { FIREBASE_CONFIG } from './firebase-config.js?v=1.8';
-import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.8';
-import { Workbook } from './excel.js?v=1.8';
+import { FIREBASE_CONFIG } from './firebase-config.js?v=1.9';
+import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.9';
+import { Workbook } from './excel.js?v=1.9';
 
 // ---------- helpers ----------
 const $ = (s, el = document) => el.querySelector(s);
@@ -352,8 +352,10 @@ function itemModal(i) {
 const editors = [];
 function lineEditor(host, { availLoc, label = 'Quantity' } = {}) {
   const ed = { lines: [], availLoc, host };
-  host.innerHTML = `<div class="adder"><input class="it" placeholder="Item – start typing"><input type="number" class="qt" placeholder="${label}" min="0" step="1" inputmode="numeric"><button class="btn y sm add" type="button">Add</button></div>
+  host.innerHTML = `<div class="adder"><input class="it" placeholder="Item – start typing"><input type="number" class="qt" placeholder="${label}" min="0" step="1" inputmode="numeric"><button class="btn y sm add" type="button">Add</button><button class="btn sm mic" type="button" title="Say the items – e.g. “10 beans, 6 pasta”">🎤</button></div>
     <div class="lines"></div><p class="small muted cnt"></p>`;
+  // v1.9: say the items out loud, as on the food bank managers' shopping lists
+  $('.mic', host).onclick = () => { if (MIC.on && MIC.ed === ed) micStop(); else micStart(ed); };
   const it = $('.it', host), qt = $('.qt', host);
   const add = () => {
     const name = norm(it.value); const q = num(qt.value);
@@ -363,7 +365,7 @@ function lineEditor(host, { availLoc, label = 'Quantity' } = {}) {
     const known = known0 && canon(known0);
     if (known0 && known !== known0) toast(`${known0} was merged into ${known} – booked as ${known}`, 5000);
     const nm = known || name;
-    const ex = ed.lines.find(x => x.i === nm); if (ex) ex.q = num(ex.q + q); else ed.lines.push({ i: nm, q, isNew: !known });
+    const ex = ed.lines.find(x => x.i === nm && !x.chk); if (ex) ex.q = num(ex.q + q); else ed.lines.push({ i: nm, q, isNew: !known });
     it.value = ''; qt.value = ''; it.focus(); draw();
   };
   $('.add', host).onclick = add;
@@ -374,15 +376,39 @@ function lineEditor(host, { availLoc, label = 'Quantity' } = {}) {
     const L = ed.availLoc?.();
     $('.lines', host).innerHTML = ed.lines.map((x, k) => {
       const av = L ? qty(L, x.i) : null;
+      // v1.9: a spoken item the app wasn't sure about – pick the right item, or tap ✓ if it is right
+      if (x.chk) return `<div class="line chk"><input class="it fix" data-fix="${k}" value="${esc(x.i)}" aria-label="Item">${av !== null ? ` <span class="av">(${esc(L)} has ${av})</span>` : ''}${av !== null && av < x.q ? ' <span class="warn small">more than in stock</span>' : ''}
+        <input type="number" value="${x.q}" data-k="${k}" style="width:80px" min="0"><button class="link okl" data-ok="${k}" title="This is right">✓</button><button class="link" data-del="${k}">remove</button>
+        <div class="heard">Heard: “${esc(x.heard || '')}” – is <b>${esc(x.i)}</b> right? Tap ✓, or pick the right item.</div></div>`;
       return `<div class="line"><span class="nm">${esc(x.i)}${x.isNew ? ' <span class="pill st">new item</span>' : ''}${av !== null ? ` <span class="av">(${esc(L)} has ${av})</span>` : ''}${av !== null && av < x.q ? ' <span class="warn small">more than in stock</span>' : ''}</span>
         <input type="number" value="${x.q}" data-k="${k}" style="width:80px" min="0"><button class="link" data-del="${k}">remove</button></div>`;
     }).join('');
-    $('.cnt', host).textContent = ed.lines.length ? `${ed.lines.length} item${ed.lines.length > 1 ? 's' : ''}, ${num(ed.lines.reduce((a, x) => a + x.q, 0))} units` : 'No items added yet.';
+    const unsure = ed.lines.filter(x => x.chk).length;
+    $('.cnt', host).textContent = ed.lines.length ? `${ed.lines.length} item${ed.lines.length > 1 ? 's' : ''}, ${num(ed.lines.reduce((a, x) => a + x.q, 0))} units${unsure ? ` – ${unsure} to check` : ''}` : 'No items added yet.';
+    host.querySelectorAll('.fix').forEach(inp => itemPicker(inp, { strict: () => true, onPick: name => {
+      const k = +inp.dataset.fix, ln = ed.lines[k]; if (!ln) return;
+      const other = ed.lines.findIndex((y, j) => j !== k && y.i === name && !y.chk);
+      if (other >= 0) { ed.lines[other].q = num(ed.lines[other].q + ln.q); ed.lines.splice(k, 1); } else { ln.i = name; delete ln.chk; delete ln.heard; }
+      draw();
+    } }));
   }
   $('.lines', host).addEventListener('change', e => { const k = e.target.dataset.k; if (k !== undefined) { ed.lines[k].q = num(e.target.value); draw(); } });
-  $('.lines', host).addEventListener('click', e => { const k = e.target.dataset.del; if (k !== undefined) { ed.lines.splice(k, 1); draw(); } });
+  $('.lines', host).addEventListener('click', e => {
+    const k = e.target.dataset.del; if (k !== undefined) { ed.lines.splice(k, 1); draw(); return; }
+    const o = e.target.dataset.ok; if (o !== undefined) {   // ✓ – it is right; joins the same item if it is already on the list
+      const ln = ed.lines[+o]; if (!ln) return; delete ln.chk; delete ln.heard;
+      const other = ed.lines.findIndex((y, j) => j !== +o && y.i === ln.i && !y.chk);
+      if (other >= 0) { ed.lines[other].q = num(ed.lines[other].q + ln.q); ed.lines.splice(+o, 1); }
+      draw();
+    }
+  });
   ed.draw = draw; ed.clear = () => { ed.lines = []; draw(); };
-  ed.get = () => ed.lines.filter(x => x.q > 0);
+  // nothing is booked while a spoken item is still waiting to be checked
+  ed.get = () => {
+    const unsure = ed.lines.filter(x => x.chk).length;
+    if (unsure) { host.querySelector('.line.chk')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); toast(`Check the ${unsure} highlighted item${unsure === 1 ? '' : 's'} first – tap ✓ if it is right, or pick the right item`, 6000); return null; }
+    return ed.lines.filter(x => x.q > 0);
+  };
   editors.push(ed); draw();
   return ed;
 }
@@ -402,7 +428,7 @@ function initIn() {
     <p><button class="btn" id="inSave">Book in</button></p></div>`;
   const ed = lineEditor($('#inLines', el));
   $('#inSave', el).onclick = async () => {
-    const lines = ed.get(); if (!lines.length) return toast('Add at least one item');
+    const lines = ed.get(); if (!lines) return; if (!lines.length) return toast('Add at least one item');
     const type = $('#inType', el).value, loc = $('#inLoc', el).value, from = norm($('#inFrom', el).value);
     const note = (type === 'donation' ? 'Donation' : type === 'purchase' ? 'Purchased' : 'Other') + (from ? ' - ' + from : '');
     try {
@@ -429,7 +455,7 @@ function initTransfer() {
   const ed = lineEditor($('#trLines', el), { availLoc: () => $('#trFrom', el).value });
   $('#trFrom', el).onchange = () => ed.draw();
   $('#trSave', el).onclick = async () => {
-    const lines = ed.get(); if (!lines.length) return toast('Add at least one item');
+    const lines = ed.get(); if (!lines) return; if (!lines.length) return toast('Add at least one item');
     const from = $('#trFrom', el).value, to = $('#trTo', el).value;
     if (from === to) return toast('From and To are the same');
     const extraNote = norm($('#trNote', el).value);
@@ -572,7 +598,7 @@ function initOut() {
   const ed = lineEditor($('#outLines', el), { availLoc: () => $('#outLoc', el).value });
   $('#outLoc', el).onchange = () => ed.draw();
   $('#outSave', el).onclick = async () => {
-    const lines = ed.get(); if (!lines.length) return toast('Add at least one item');
+    const lines = ed.get(); if (!lines) return; if (!lines.length) return toast('Add at least one item');
     const loc = $('#outLoc', el).value, why = $('#outWhy', el).value, n = norm($('#outNote', el).value);
     try { $('#outSave', el).disabled = true; await book({ type: 'out', note: why + (n ? ' - ' + n : ''), date: $('#outDate', el).value || today(), lines: lines.map(x => ({ l: loc, i: x.i, q: -x.q })) }); toast(`Booked out of ${loc}`); ed.clear(); $('#outNote', el).value = ''; }
     catch (e) { toast('Not saved: ' + e.message, 5000); } finally { $('#outSave', el).disabled = false; }
@@ -1302,7 +1328,7 @@ function itemPicker(input, { strict = () => false, onPick } = {}) {
 // Uses the phone's own speech recognition (Chrome on Android, Safari on iPhone). It keeps listening while
 // the person scrolls around; if they switch to another app the phone stops it, and it starts again when they come back.
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-const MIC = { on: false, rec: null, id: null, interim: '', last: '', added: 0, unsure: 0, err: '' };
+const MIC = { on: false, rec: null, id: null, ed: null, interim: '', last: '', added: 0, unsure: 0, err: '' };
 const NUMW = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90, hundred: 100 };
 // words that say how it comes, not what it is – they don't count against a match
 const FILL = new Set(['of', 'the', 'a', 'an', 'some', 'and', 'tin', 'tins', 'can', 'cans', 'pack', 'packs', 'packet', 'packets', 'bag', 'bags', 'box', 'boxes', 'jar', 'jars', 'bottle', 'bottles', 'carton', 'cartons', 'pot', 'pots', 'tub', 'tubs', 'x', 'times', 'please', 'um', 'er', 'erm', 'uh', 'okay', 'ok', 'lots', 'large', 'small', 'big']);
@@ -1357,7 +1383,9 @@ function heard(res) {
   const lowConf = alt.confidence > 0 && alt.confidence < 0.55;
   const got = items.map(x => ({ ...x, m: matchItem(x.said) })).filter(x => x.m);
   if (!got.length) { MIC.unsure++; drawMic(); return; }
-  const ok = mutList(MIC.id, l => {
+  // a shopping list (food bank managers) or the items on Simon's Book In / Book Out / Transfer (v1.9)
+  const apply = MIC.ed ? fn => { fn(MIC.ed); MIC.ed.draw(); return true; } : fn => mutList(MIC.id, fn);
+  const ok = apply(l => {
     for (const x of got) {
       const sure = x.m.sure && !lowConf;
       const ex = sure && l.lines.find(y => y.i === x.m.i && !y.chk);
@@ -1378,14 +1406,18 @@ function startRec() {
   MIC.rec = r;
   try { r.start(); } catch (e) { MIC.rec = null; }
 }
-function micStart(id) {
+function micStart(target) {
   if (!SR) return toast("This browser can't listen – use Chrome on Android or Safari on iPhone", 6000);
   if (MIC.on) micStop();
-  Object.assign(MIC, { on: true, id, interim: '', last: '', lastAdded: '', added: 0, unsure: 0, err: '' });
+  const ed = typeof target === 'object' ? target : null;
+  Object.assign(MIC, { on: true, id: ed ? null : target, ed, interim: '', last: '', lastAdded: '', added: 0, unsure: 0, err: '' });
   startRec(); drawMic(); renderMicButtons();
 }
 function micStop() { MIC.on = false; try { MIC.rec?.stop(); } catch { } MIC.rec = null; drawMic(); renderMicButtons(); }
-function renderMicButtons() { document.querySelectorAll('.paper .mic').forEach(b => { const on = MIC.on && b.closest('.paper').dataset.id === MIC.id; b.classList.toggle('on', on); b.textContent = on ? '■ Stop' : '🎤'; }); }
+function renderMicButtons() {
+  document.querySelectorAll('.paper .mic').forEach(b => { const on = MIC.on && !MIC.ed && b.closest('.paper').dataset.id === MIC.id; b.classList.toggle('on', on); b.textContent = on ? '■ Stop' : '🎤'; });
+  editors.forEach(ed => { const b = $('.mic', ed.host); if (!b) return; const on = MIC.on && MIC.ed === ed; b.classList.toggle('on', on); b.textContent = on ? '■ Stop' : '🎤'; });
+}
 document.addEventListener('visibilitychange', () => { if (!document.hidden && MIC.on && !MIC.rec) { startRec(); toast('Listening again'); } });
 // the bar at the bottom of the screen shows what it is hearing, wherever the person has scrolled to
 function drawMic() {
@@ -1394,8 +1426,11 @@ function drawMic() {
   bar.hidden = false;
   bar.className = 'micbar' + (MIC.on ? ' on' : '');
   bar.innerHTML = `<div class="mt"><b>${MIC.on ? (MIC.rec ? '🎤 Listening…' : '🎤 Starting…') : 'Microphone off'}</b> ${MIC.interim ? `<span class="mi">“${esc(MIC.interim)}”</span>` : MIC.lastAdded ? `<span class="ma">Added: ${esc(MIC.lastAdded)}</span>` : MIC.on ? '<span class="mi">Say a number then the item, e.g. “10 beans”</span>' : ''}</div>
-    <div class="mb"><span class="small">${MIC.added} added${MIC.unsure ? `, ${MIC.unsure} to check` : ''}</span><button class="btn sm g" id="micGo">Show list</button>${MIC.on ? '<button class="btn sm r" id="micStop">Stop</button>' : '<button class="btn sm g" id="micClose">Close</button>'}</div>`;
-  $('#micGo', bar).onclick = () => { showTab('bank'); document.querySelector(`.paper[data-id="${MIC.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+    <div class="mb"><span class="small">${MIC.added} added${MIC.unsure ? `, ${MIC.unsure} to check` : ''}</span><button class="btn sm g" id="micGo">${MIC.ed ? 'Show items' : 'Show list'}</button>${MIC.on ? '<button class="btn sm r" id="micStop">Stop</button>' : '<button class="btn sm g" id="micClose">Close</button>'}</div>`;
+  $('#micGo', bar).onclick = () => {
+    if (MIC.ed) { const tab = MIC.ed.host.closest('[id^="tab-"]')?.id.slice(4); if (tab) showTab(tab); MIC.ed.host.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+    showTab('bank'); document.querySelector(`.paper[data-id="${MIC.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
   if ($('#micStop', bar)) $('#micStop', bar).onclick = () => micStop();
   if ($('#micClose', bar)) $('#micClose', bar).onclick = () => { MIC.added = 0; drawMic(); };
 }

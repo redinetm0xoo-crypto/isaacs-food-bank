@@ -198,3 +198,10 @@ tr.adj input{border-color:#d9a400}
 #mgList td:nth-child(3),#mgList th:nth-child(3){text-align:left}
 .card.req.flash{animation:flash 1s 3}
 @keyframes flash{50%{box-shadow:0 0 0 6px rgba(242,184,75,.8)}}
+
+/* v1.9: Simon's item editor – spoken items to check */
+.line.chk{flex-wrap:wrap;background:#fff1a8;border-radius:6px;padding:6px;margin:2px 0}
+.line.chk input.it{flex:1 1 200px;min-width:0;font-weight:700}
+.line .heard{flex-basis:100%;font-size:12px;color:#7a5b00}
+.line .okl{font-size:20px;text-decoration:none}
+.adder .mic{flex:0 0 auto}
