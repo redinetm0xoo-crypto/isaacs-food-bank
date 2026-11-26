@@ -5,8 +5,9 @@ import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, collection, onSnapshot,
   writeBatch, increment, serverTimestamp, query, orderBy, limit, startAfter, getDocs, getDoc, setDoc, addDoc, deleteDoc, updateDoc, where, arrayUnion, Timestamp
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
-import { FIREBASE_CONFIG } from './firebase-config.js?v=1.7';
-import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.7';
+import { FIREBASE_CONFIG } from './firebase-config.js?v=1.8';
+import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.8';
+import { Workbook } from './excel.js?v=1.8';
 
 // ---------- helpers ----------
 const $ = (s, el = document) => el.querySelector(s);
@@ -950,6 +951,23 @@ function renderDetailReport(el) {
   $('#rpLoc', el).onchange = () => { R.loc = $('#rpLoc', el).value; runReport(); };
   runReport();
 }
+// v1.8: the figures for one place between two dates (used by the report on screen and the Excel export)
+function bankReport(L, from, to, mvs) {
+  const rows = {}; const T = { rec: 0, don: 0, given: 0, out: 0, sent: 0, plus: 0, n: 0 };
+  const row = i => (rows[i] ||= { rec: 0, don: 0, given: 0, out: 0, sent: 0, plus: 0 });
+  for (const m of mvs) {
+    if (m.voided || m.merge || !(m.locs || []).includes(L) || !(m.date >= from) || m.date > to) continue; T.n++;
+    for (const x of m.lines) {
+      if (x.l !== L) continue; const r = row(canon(x.i)), q = x.q;
+      const k = m.type === 'transfer' ? (q > 0 ? 'rec' : 'sent') : m.type === 'stocktake' ? (q < 0 ? 'given' : 'plus') : m.type === 'out' ? 'out' : (q > 0 ? 'don' : 'out');
+      r[k] += Math.abs(q); T[k] += Math.abs(q);
+    }
+  }
+  const stockNow = S.stock[L] || {};
+  const items = [...new Set([...Object.keys(rows), ...Object.keys(stockNow).filter(i => qty(L, i) !== 0)])].sort((a, b) => ((rows[b]?.given || 0) + (rows[b]?.out || 0)) - ((rows[a]?.given || 0) + (rows[a]?.out || 0)) || a.localeCompare(b));
+  const nowTot = Object.values(stockNow).reduce((a, b) => a + num(b), 0);
+  return { rows, T, items, nowTot };
+}
 async function runReport() {
   const out = $('#rpOut'); if (!out) return;
   if (!R.from || !R.to || R.from > R.to) { out.innerHTML = '<p class="warn">Choose a From date before the To date.</p>'; return; }
@@ -957,19 +975,7 @@ async function runReport() {
   const L = R.loc;
   try {
     const qs = await getDocs(query(collection(db, 'movements'), where('locs', 'array-contains', L)));
-    const rows = {}; const T = { rec: 0, don: 0, given: 0, out: 0, sent: 0, plus: 0, n: 0 };
-    const row = i => (rows[i] ||= { rec: 0, don: 0, given: 0, out: 0, sent: 0, plus: 0 });
-    qs.forEach(d => {
-      const m = d.data(); if (m.voided || m.merge || m.date < R.from || m.date > R.to) return; T.n++;
-      for (const x of m.lines) {
-        if (x.l !== L) continue; const r = row(canon(x.i)), q = x.q;
-        const k = m.type === 'transfer' ? (q > 0 ? 'rec' : 'sent') : m.type === 'stocktake' ? (q < 0 ? 'given' : 'plus') : m.type === 'out' ? 'out' : (q > 0 ? 'don' : 'out');
-        r[k] += Math.abs(q); T[k] += Math.abs(q);
-      }
-    });
-    const stockNow = S.stock[L] || {};
-    const items = [...new Set([...Object.keys(rows), ...Object.keys(stockNow).filter(i => qty(L, i) !== 0)])].sort((a, b) => ((rows[b]?.given || 0) + (rows[b]?.out || 0)) - ((rows[a]?.given || 0) + (rows[a]?.out || 0)) || a.localeCompare(b));
-    const nowTot = Object.values(stockNow).reduce((a, b) => a + num(b), 0);
+    const { rows, T, items, nowTot } = bankReport(L, R.from, R.to, qs.docs.map(d => d.data()));
     const c = v => v ? num(v) : '<span class="muted">–</span>';
     out.innerHTML = `<h3>${esc(locLabel(L))} · ${fmtDate(R.from)} to ${fmtDate(R.to)}</h3>
       <div class="stats">
@@ -1063,29 +1069,14 @@ async function renderSimonGraphs(reload) {
   const now = new Date().getFullYear(), first = Math.min(now, ...SG.mv.map(m => +m.date.slice(0, 4)).filter(Boolean));
   const years = []; for (let y = first; y <= now; y++) years.push(y);
   if (!years.includes(SG.year)) SG.year = now;
-  const P = periods(SG.mode, SG.year, years), n = P.labels.length, z = () => new Array(n).fill(0);
-  const kind = l => S.locs[l]?.kind, banks = bankNames();
-  const A = { mainIn: z(), mainOut: z(), stIn: z(), stOut: z(), bankIn: z(), given: z(), each: Object.fromEntries(banks.map(b => [b, z()])), don: z(), direct: z(), eachDirect: Object.fromEntries(banks.map(b => [b, z()])) };
-  for (const m of SG.mv) {
-    const i = P.key(m.date); if (i < 0 || i >= n) continue;
-    // v1.5: donations booked in (not the ones from food banks' donation lists) and direct donations
-    // (food banks' donation lists accepted by Simon: the transfer from Donation to the food bank)
-    const directList = m.type === 'transfer' && m.listId && m.lines.some(y => kind(y.l) === 'donation');
-    for (const x of m.lines) {
-      const k = kind(x.l);
-      if (m.type === 'donation' && x.q > 0 && k !== 'donation') A.don[i] += x.q;
-      if (directList && x.q > 0 && k === 'bank') { A.direct[i] += x.q; if (A.eachDirect[x.l]) A.eachDirect[x.l][i] += x.q; }
-      if (k === 'store') { const main = x.l === 'Main Storage'; if (isIn(m, x)) (main ? A.mainIn : A.stIn)[i] += x.q; if (isOut(m, x)) (main ? A.mainOut : A.stOut)[i] -= x.q; }
-      else if (k === 'bank') { if (isIn(m, x)) { A.bankIn[i] += x.q; if (A.each[x.l]) A.each[x.l][i] += x.q; } if (isGiven(m, x)) A.given[i] -= x.q; }
-    }
-  }
+  const banks = bankNames(), { P, A } = sgCompute(SG.mv, SG.mode, SG.year, years);
   const r = a => a.map(num), open = SG.mode !== 'week';
   const others = storeNames().filter(x => x !== 'Main Storage');
   const per = SG.mode === 'year' ? 'every year' : SG.year;
   box.innerHTML = `<div class="card"><div class="row">${modeBtns(SG.mode, [['week', 'Weekly'], ['month', 'Monthly'], ['year', 'Yearly']])}
       ${SG.mode !== 'year' ? `<label style="flex:0 0 auto">Year<select id="sgYear">${years.map(y => `<option ${y === SG.year ? 'selected' : ''}>${y}</option>`).join('')}</select></label>` : ''}
-      <button class="btn g sm" id="sgRe">Refresh</button></div>
-      <p class="small muted" style="margin:8px 0 0">Units. Undone bookings, item merges and the starting stock from the spreadsheet are left out. "Donations" are donations booked in (Book In and the spreadsheet); "direct donations" are the food banks' donation lists Simon accepted – each counted once. "In" and "out" of storage leave out stock-take differences; "given out" at food banks comes from stock takes (counted lower than the app) and Book Out. The data starts in ${first}${first === 2024 ? ' (April)' : ''}.</p></div>
+      <button class="btn g sm" id="sgRe">Refresh</button> <button class="btn sm" id="sgXl">Export to Excel</button></div>
+      <p class="small muted" style="margin:8px 0 0">${SG_NOTE} The data starts in ${first}${first === 2024 ? ' (April)' : ''}. <b>Export to Excel</b> saves every graph (weekly, monthly and yearly, every year) with its figures, and the food bank report for every place, from the start to today.</p></div>
     ${barChart({ title: `Main Storage – in and out, ${per}`, labels: P.labels, series: [{ name: 'In', cls: 'in', values: r(A.mainIn) }, { name: 'Out', cls: 'out', values: r(A.mainOut) }], tableOpen: open })}
     ${others.length ? barChart({ title: `${others.join(', ')} – in and out, ${per}`, labels: P.labels, series: [{ name: 'In', cls: 'in', values: r(A.stIn) }, { name: 'Out', cls: 'out', values: r(A.stOut) }], tableOpen: open }) : ''}
     ${barChart({ title: `All food banks – items booked in, ${per}`, labels: P.labels, series: [{ name: 'Booked in', cls: 'in', values: r(A.bankIn) }], tableOpen: open })}
@@ -1099,6 +1090,105 @@ async function renderSimonGraphs(reload) {
   box.querySelector('.seg').onclick = e => { const m = e.target.dataset.mode; if (m) { SG.mode = m; renderSimonGraphs(); } };
   if ($('#sgYear', box)) $('#sgYear', box).onchange = e => { SG.year = +e.target.value; renderSimonGraphs(); };
   $('#sgRe', box).onclick = () => renderSimonGraphs(true);
+  $('#sgXl', box).onclick = () => exportExcel($('#sgXl', box));
+}
+const SG_NOTE = 'Units. Undone bookings, item merges and the starting stock from the spreadsheet are left out. "Donations" are donations booked in (Book In and the spreadsheet); "direct donations" are the food banks\' donation lists Simon accepted – each counted once. "In" and "out" of storage leave out stock-take differences; "given out" at food banks comes from stock takes (counted lower than the app) and Book Out.';
+// v1.8: the graph figures for one period (used by the graphs on screen and the Excel export)
+function sgCompute(mvs, mode, year, years) {
+  const P = periods(mode, year, years), n = P.labels.length, z = () => new Array(n).fill(0);
+  const kind = l => S.locs[l]?.kind, banks = bankNames();
+  const A = { mainIn: z(), mainOut: z(), stIn: z(), stOut: z(), bankIn: z(), given: z(), each: Object.fromEntries(banks.map(b => [b, z()])), don: z(), direct: z(), eachDirect: Object.fromEntries(banks.map(b => [b, z()])) };
+  for (const m of mvs) {
+    const i = P.key(m.date); if (i < 0 || i >= n) continue;
+    // v1.5: donations booked in (not the ones from food banks' donation lists) and direct donations
+    // (food banks' donation lists accepted by Simon: the transfer from Donation to the food bank)
+    const directList = m.type === 'transfer' && m.listId && m.lines.some(y => kind(y.l) === 'donation');
+    for (const x of m.lines) {
+      const k = kind(x.l);
+      if (m.type === 'donation' && x.q > 0 && k !== 'donation') A.don[i] += x.q;
+      if (directList && x.q > 0 && k === 'bank') { A.direct[i] += x.q; if (A.eachDirect[x.l]) A.eachDirect[x.l][i] += x.q; }
+      if (k === 'store') { const main = x.l === 'Main Storage'; if (isIn(m, x)) (main ? A.mainIn : A.stIn)[i] += x.q; if (isOut(m, x)) (main ? A.mainOut : A.stOut)[i] -= x.q; }
+      else if (k === 'bank') { if (isIn(m, x)) { A.bankIn[i] += x.q; if (A.each[x.l]) A.each[x.l][i] += x.q; } if (isGiven(m, x)) A.given[i] -= x.q; }
+    }
+  }
+  return { P, A };
+}
+// v1.8: Excel export – every graph (yearly; monthly and weekly for every year) with its figures and a real Excel chart,
+// and the food bank report for every place from the start of the data to today. Uses the same sums as the screen.
+const XL_COL = { in: '2F9252', out: 'C8312B', don: '5B8FD6', dir: '7B52AB' };
+async function exportExcel(btn) {
+  const was = btn?.textContent;
+  try {
+    if (btn) { btn.disabled = true; btn.textContent = 'Making the file…'; }
+    if (!SG.mv || Date.now() - SG.at > 10 * 60000) { const qs = await getDocs(collection(db, 'movements')); SG.mv = qs.docs.map(d => d.data()).filter(m => !m.voided && !m.merge && m.date); SG.at = Date.now(); }
+    const wb = buildExcel(SG.mv, new Date());
+    const blob = new Blob([wb.save('Food Bank Manager report')], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `Food Bank report ${today()}.xlsx` });
+    document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    toast(`Excel file saved – ${wb.sheets.length} sheets, ${wb.sheets.reduce((n, s) => n + s.charts.length, 0)} charts`, 5000);
+  } catch (e) { toast('Could not make the Excel file: ' + e.message, 7000); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = was; } }
+}
+function buildExcel(mvs, when) {
+  const wb = new Workbook(), now = when.getFullYear();
+  const first = Math.min(now, ...mvs.map(m => +m.date.slice(0, 4)).filter(Boolean)), years = []; for (let y = first; y <= now; y++) years.push(y);
+  const firstDate = mvs.reduce((a, m) => m.date < a ? m.date : a, today()), to = today();
+  // every period: yearly once, then monthly and weekly for each year (newest year first)
+  const sections = [{ mode: 'year', year: now, head: 'Yearly – every year', col: 'Year' }];
+  for (const y of [...years].reverse()) sections.push({ mode: 'month', year: y, head: `${y} – monthly`, col: 'Month' }, { mode: 'week', year: y, head: `${y} – weekly`, col: 'Week commencing' });
+  sections.forEach(s => Object.assign(s, sgCompute(mvs, s.mode, s.year, years)));
+  const banks = bankNames(), others = storeNames().filter(x => x !== 'Main Storage');
+  const graphs = [
+    { name: 'Main Storage', title: 'Main Storage – in and out', series: [['In', 'in', A => A.mainIn], ['Out', 'out', A => A.mainOut]] },
+    ...(others.length ? [{ name: 'Other storage', title: `${others.join(', ')} – in and out`, series: [['In', 'in', A => A.stIn], ['Out', 'out', A => A.stOut]] }] : []),
+    { name: 'Food banks booked in', title: 'All food banks – items booked in', series: [['Booked in', 'in', A => A.bankIn]] },
+    { name: 'Food banks given out', title: 'All food banks – items given out', series: [['Given out', 'out', A => A.given]] },
+    { name: 'Donations', title: 'Donations – booked in', series: [['Donations', 'don', A => A.don]] },
+    { name: 'Direct donations', title: "Direct donations – food banks' donation lists", series: [['Direct donations', 'dir', A => A.direct]] },
+    ...banks.map(b => ({ name: b, title: `${locLabel(b)} – booked in and direct donations`, series: [['Booked in', 'in', A => A.each[b]], ['Direct donations', 'dir', A => A.eachDirect[b]]] })),
+  ];
+  const stamp = when.toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+  const contents = wb.sheet('Contents', [30, 120]);
+  const reportPlaces = locNames().filter(n => S.locs[n].kind !== 'donation');
+  const list = [];
+  for (const g of graphs) {
+    const sh = wb.sheet(g.name, [18, ...g.series.map(() => 16)]);
+    list.push([sh.name, `${g.title} – yearly, and monthly and weekly for ${years.join(', ')}. Figures with a chart for each.`]);
+    sh.set(0, 0, g.title, 'title'); sh.set(1, 0, `Units. Exported ${stamp}. See Contents for what is counted.`, 'note');
+    let r = 3; const chartCol = g.series.length + 2;
+    for (const s of sections) {
+      const n = s.P.labels.length, vals = g.series.map(([, , f]) => f(s.A).map(num));
+      sh.set(r, 0, s.head, 'h');
+      const hr = r + 1; sh.row(hr, 0, [s.col, ...g.series.map(x => x[0])], ['th', ...g.series.map(() => 'thn')]);
+      s.P.labels.forEach((lab, i) => sh.row(hr + 1 + i, 0, [lab, ...vals.map(v => v[i])], ['', ...vals.map(() => 'n')]));
+      sh.row(hr + 1 + n, 0, ['Total', ...vals.map(v => num(v.reduce((a, b) => a + b, 0)))], ['tot', ...vals.map(() => 'totn')]);
+      const rows = n > 20 ? 22 : 16;
+      sh.chart({ title: `${g.title}, ${s.mode === 'year' ? 'every year' : s.year + (s.mode === 'week' ? ' (weekly)' : '')}`, cat: { col: 0, r1: hr + 1, r2: hr + n }, vals: g.series.map(([, cls], k) => ({ col: 1 + k, nameRow: hr, color: XL_COL[cls] })), at: { col: chartCol, row: r }, size: { cols: n > 20 ? 14 : 10, rows } });
+      r += Math.max(n + 3, rows + 1) + 2;
+    }
+  }
+  for (const L of reportPlaces) {
+    const { rows, T, items, nowTot } = bankReport(L, firstDate, to, mvs);
+    const sh = wb.sheet(`Report – ${L}`, [34, 13, 18, 13, 13, 12, 11, 15]);
+    list.push([sh.name, `Food bank report for ${locLabel(L)}, ${fmtDate(firstDate)} to ${fmtDate(to)}: received, given out and in stock now, by item.`]);
+    sh.set(0, 0, `${locLabel(L)} – food bank report`, 'title'); sh.set(1, 0, `${fmtDate(firstDate)} to ${fmtDate(to)} · units · exported ${stamp}`, 'note');
+    [['Received from storage', T.rec], ['Donations / bought', T.don], ['Given out (stock takes)', T.given], ['Booked out', T.out], ['Sent on elsewhere', T.sent], ['Found in stock takes', T.plus], ['In stock now', Math.round(nowTot)], ['Bookings in this period', T.n]]
+      .forEach(([k, v], i) => sh.row(3 + i, 0, [k, num(v)], ['', 'n']));
+    const hr = 12, cols = ['rec', 'don', 'given', 'out', 'sent', 'plus'];
+    sh.row(hr, 0, ['Item', 'Received', 'Donated / bought', 'Given out', 'Booked out', 'Sent on', 'Found', 'In stock now'], ['th', 'thn', 'thn', 'thn', 'thn', 'thn', 'thn', 'thn']);
+    items.forEach((i, k) => { const x = rows[i] || {}; sh.row(hr + 1 + k, 0, [i, ...cols.map(c => x[c] ? num(x[c]) : ''), qty(L, i)], ['', 'n', 'n', 'n', 'n', 'n', 'n', 'n']); });
+    if (!items.length) sh.set(hr + 1, 0, 'Nothing booked here in this period.', 'note');
+    else sh.row(hr + 1 + items.length, 0, ['Total', ...cols.map(c => num(T[c])), Math.round(nowTot)], ['tot', 'totn', 'totn', 'totn', 'totn', 'totn', 'totn', 'totn']);
+  }
+  // contents page: what is in the file and how it is counted
+  contents.set(0, 0, "Food Bank Manager – report", 'title');
+  contents.set(1, 0, `Friends of Isaac's Food Bank · exported ${stamp}${S.name ? ' by ' + S.name : ''} · app v${APP_VERSION}`, 'note');
+  contents.set(3, 0, 'How it is counted', 'h');
+  const notes = [...SG_NOTE.split(/(?<=\.) /), `The bookings start on ${fmtDate(firstDate)}. Weeks start on Monday; week 1 is the week with 1 January in it.`, 'Each graph sheet has the figures in a table with a chart beside it. The charts read the figures from the sheet, so they can be resized, restyled or copied into Word or PowerPoint.', '"Given out" in the food bank reports comes from stock takes (counted lower than the app) and Book Out.'];
+  notes.forEach((x, i) => contents.set(4 + i, 0, x));
+  const lr = 5 + notes.length; contents.set(lr, 0, 'Sheets', 'h'); contents.row(lr + 1, 0, ['Sheet', 'What it shows'], ['th', 'th']);
+  list.forEach(([a, b], i) => contents.row(lr + 2 + i, 0, [a, b]));
+  return wb;
 }
 
 // ---------- Contacts (both views; called Emergency before v1.3 – stored in config/emergency) ----------

@@ -1,8 +1,12 @@
 // Food Bank Manager – Friends of Isaac's Food Bank
 // Version and fixed data. Bump APP_VERSION and add to VERSION_HISTORY every release.
-export const APP_VERSION = '1.7';
+export const APP_VERSION = '1.8';
 
 export const VERSION_HISTORY = [
+  ['1.8', '26 Nov 2026', [
+    'Report (Simon): Export to Excel – every graph (yearly, and monthly and weekly for every year) with its figures and a real Excel chart, and the food bank report for every place from the start to today',
+    'Simon\'s tabs: Book Out moved before Transfer',
+  ]],
   ['1.7', '26 Nov 2026', [
     'Notification emails have two buttons: "Open and edit in Food Bank Manager" and "Accept" – Accept opens the request and asks "Accept as asked?", one tap books it (stock takes: the usual adjustments question)',
     'If the request was changed and sent again after the email, Accept just opens it to check',
