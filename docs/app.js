@@ -5,8 +5,8 @@ import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, collection, onSnapshot,
   writeBatch, increment, serverTimestamp, query, orderBy, limit, startAfter, getDocs, getDoc, setDoc, addDoc, deleteDoc, updateDoc, where, arrayUnion, Timestamp
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
-import { FIREBASE_CONFIG } from './firebase-config.js?v=1.6';
-import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.6';
+import { FIREBASE_CONFIG } from './firebase-config.js?v=1.7';
+import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.7';
 
 // ---------- helpers ----------
 const $ = (s, el = document) => el.querySelector(s);
@@ -155,20 +155,33 @@ function refresh() {
   if (!refresh.once) { refresh.once = true; firstReady(); }
 }
 // v1.6: links in the notification emails – …/isaacs-food-bank/#req=<id> opens that request
-let LINK = (location.hash.match(/^#req=([\w-]+)/) || [])[1] || null;
+// v1.7: #accept=<id>~<sent, seconds> opens it and asks "Accept as asked?" – one tap books it (never on its own:
+// email systems open links to scan them, so a link must not accept anything without a tap in the app)
+const parseLink = () => { const m = location.hash.match(/^#(req|accept)=([\w-]+)(?:~(\d+))?/); return m ? { id: m[2], accept: m[1] === 'accept', t: m[3] ? Number(m[3]) : null } : null; };
+let LINK = parseLink();
 async function openLink() {
   if (!LINK || !S.role) return;   // nobody has picked a view on this device yet – wait for that
   if (viewOf() !== 'simon') { if (LINK && S.role === 'mgr') { toast("That link opens a request in Simon's view – use Switch view at the top to see it", 8000); LINK = null; history.replaceState(null, '', location.pathname); } return; }
   for (let i = 0; i < 40 && !S.ready.lists; i++) await new Promise(r => setTimeout(r, 250));
-  const id = LINK; LINK = null; history.replaceState(null, '', location.pathname);
+  const { id, accept, t } = LINK; LINK = null; history.replaceState(null, '', location.pathname);
   const l = S.lists.find(x => x.id === id);
   if (!l) return toast("That request isn't there any more (it may have been deleted)", 6000);
-  if (l.status === 'submitted') {
-    showTab('requests');
-    setTimeout(() => { const c = document.querySelector(`.card.req[data-id="${id}"]`); if (c) { c.scrollIntoView({ behavior: 'smooth', block: 'start' }); c.classList.add('flash'); setTimeout(() => c.classList.remove('flash'), 4000); } }, 150);
-  } else { showTab('requests'); requestModal(l); toast(`This request has already been ${STATUS[l.status]?.toLowerCase() || l.status}`, 5000); }
+  if (l.status !== 'submitted') { showTab('requests'); requestModal(l); return toast(`This request has already been ${STATUS[l.status]?.toLowerCase() || l.status}`, 5000); }
+  showTab('requests');
+  let c = null;
+  for (let i = 0; i < 20 && !(c = document.querySelector(`.card.req[data-id="${id}"]`)); i++) await new Promise(r => setTimeout(r, 100));
+  if (!c) return;
+  c.scrollIntoView({ behavior: 'smooth', block: 'start' }); c.classList.add('flash'); setTimeout(() => c.classList.remove('flash'), 4000);
+  if (!accept) return;
+  if (t != null && Math.floor(tsMs(l.submittedAt) / 1000) !== t) return toast('This request was changed and sent again after that email – check it, then press Accept', 9000);
+  await new Promise(r => setTimeout(r, 400));   // let it scroll into view first
+  if (l.kind === 'stocktake') return acceptRequest(l, c);   // asks its own question (adjustments to book)
+  const units = l.lines.reduce((a, x) => a + (Number(x.q) || 0), 0);
+  const where = l.donation ? `donation to ${l.to}` : `${l.from} → ${l.to}`;
+  if (!confirmBox(`Accept this ${l.donation ? 'donation list' : 'shopping list'} from ${l.by || '?'} as asked?\n\n${where}\n${l.lines.length} item${l.lines.length === 1 ? '' : 's'}, ${units} units`)) return toast('Not accepted – it is still waiting in Requests', 5000);
+  acceptRequest(l, c);
 }
-addEventListener('hashchange', () => { LINK = (location.hash.match(/^#req=([\w-]+)/) || [])[1] || null; if (LINK && refresh.once) openLink(); });
+addEventListener('hashchange', () => { LINK = parseLink(); if (LINK && refresh.once) openLink(); });
 function firstReady() {
   // the "Donation" stock location for direct donations
   if (!S.locs['Donation']) setDoc(doc(db, 'config', 'locations'), { l: { Donation: { kind: 'donation', site: 'Direct donations to food banks', addr: '', a: true, o: 90 } } }, { merge: true });

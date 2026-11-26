@@ -1,8 +1,12 @@
 // Food Bank Manager – Friends of Isaac's Food Bank
 // Version and fixed data. Bump APP_VERSION and add to VERSION_HISTORY every release.
-export const APP_VERSION = '1.6';
+export const APP_VERSION = '1.7';
 
 export const VERSION_HISTORY = [
+  ['1.7', '26 Nov 2026', [
+    'Notification emails have two buttons: "Open and edit in Food Bank Manager" and "Accept" – Accept opens the request and asks "Accept as asked?", one tap books it (stock takes: the usual adjustments question)',
+    'If the request was changed and sent again after the email, Accept just opens it to check',
+  ]],
   ['1.6', '26 Nov 2026', [
     'Email notifications: when a shopping list, donation list or stock take is sent to Simon, an email goes out with the items and a button that opens that request in the app.',
     'Links like …/isaacs-food-bank/#req=… open straight onto that request in Simon\'s Requests tab.',
