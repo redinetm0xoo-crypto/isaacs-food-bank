@@ -1,8 +1,18 @@
 // Food Bank Manager – Friends of Isaac's Food Bank
 // Version and fixed data. Bump APP_VERSION and add to VERSION_HISTORY every release.
-export const APP_VERSION = '1.4';
+export const APP_VERSION = '1.5';
 
 export const VERSION_HISTORY = [
+  ['1.5', '26 Nov 2026', [
+    "Simon's Report: new graphs for donations booked in and for direct donations (food banks' donation lists Simon accepted), including each food bank.",
+    'Setup › Merge items: join two items that are really the same (with a list of possible duplicates). Stock is moved across with one booking that can be undone.',
+    'Requests: a number Simon changes from what was asked for is highlighted and marked "Adjusted".',
+    "Simon's tabs: Stock Take now sits after Book Out, before History.",
+    'Food Bank tab: new instructions.',
+    'Delivery list: OK button to close it.',
+    "Contacts are now changed in Simon's Contacts tab (under the list everyone sees), not in Setup.",
+    'Backups kept in Firebase are saved in one go – whole or not at all.',
+  ]],
   ['1.4', '25 Nov 2026', [
     'Report for Food Bank Managers: one graph of items booked into a food bank this year, Weekly or Monthly. Only food banks can be chosen.',
     "Report for Simon: graphs above the food bank report – Main Storage in and out, other storage in and out, all food banks booked in and given out, and each food bank on its own. Weekly, Monthly or Yearly, tap a bar for its figure, table of figures underneath.",

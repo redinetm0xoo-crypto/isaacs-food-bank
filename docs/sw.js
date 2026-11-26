@@ -1,5 +1,5 @@
 // Food Bank Manager – keeps the last loaded copy for offline use. Always tries the network first.
-const CACHE = 'fbm-1.4';
+const CACHE = 'fbm-1.5';
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())));
 self.addEventListener('fetch', e => {

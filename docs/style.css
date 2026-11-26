@@ -185,3 +185,14 @@ tr.off td{color:#9aa39d}
 .chart table.figs tr.tot td{font-weight:800;border-top:2px solid var(--line)}
 .chart details .tablewrap{max-height:560px}
 .chartgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:0 14px}
+/* v1.5 */
+.adjtag{display:none;margin-left:6px;font-size:12px;font-weight:800;color:#8a5a00;background:#fff1a8;border-radius:999px;padding:2px 8px}
+tr.adj .adjtag{display:inline-block}
+tr.adj td{background:#fffbe0}
+tr.adj input{border-color:#d9a400}
+.dnbtns{display:flex;flex-wrap:wrap;gap:8px}
+.dnbtns #dnOk{margin-left:auto;min-width:90px}
+.chart rect.don,.key.don{fill:#5b8fd6;background:#5b8fd6}
+.chart rect.dir,.key.dir{fill:#7b52ab;background:#7b52ab}
+.nowrap{white-space:nowrap}
+#mgList td:nth-child(3),#mgList th:nth-child(3){text-align:left}

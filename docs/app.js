@@ -5,8 +5,8 @@ import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, collection, onSnapshot,
   writeBatch, increment, serverTimestamp, query, orderBy, limit, startAfter, getDocs, getDoc, setDoc, addDoc, deleteDoc, updateDoc, where, arrayUnion, Timestamp
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
-import { FIREBASE_CONFIG } from './firebase-config.js?v=1.4';
-import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.4';
+import { FIREBASE_CONFIG } from './firebase-config.js?v=1.5';
+import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.5';
 
 // ---------- helpers ----------
 const $ = (s, el = document) => el.querySelector(s);
@@ -40,6 +40,8 @@ const S = {
   emergency: [],   // [{name, role, phone, email, notes}]
   showDone: localStorage.getItem('fbm.showDone') !== '0',
 };
+// v1.5: an item merged into another points to it (into) – canon() gives the name it is counted under now
+const canon = i => { let n = i, k = 0; while (S.items[n]?.into && k++ < 10) n = S.items[n].into; return n; };
 const itemNames = () => Object.keys(S.items).filter(n => S.items[n].a !== false).sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }));
 const kindOrder = { store: 0, bank: 1, other: 2, donation: 3 };
 const locNames = (all = false) => Object.keys(S.locs).filter(n => all || S.locs[n].a !== false)
@@ -74,7 +76,8 @@ function startListeners() {
   onSnapshot(doc(db, 'config', 'locations'), s => { S.locs = s.data()?.l || {}; S.ready.locs = true; refresh(); });
   onSnapshot(doc(db, 'config', 'donors'), s => { S.donors = s.data()?.d || {}; refreshDonors(); });
   onSnapshot(collection(db, 'users'), qs => { const u = {}; qs.forEach(d => { u[d.id] = d.data(); }); S.users = u; S.ready.users = true; onUsers(); if (current === 'setup') renderSetup(); });
-  onSnapshot(doc(db, 'config', 'emergency'), s => { S.emergency = s.data()?.c || []; renderEmergency(); if (current === 'setup') renderSetup(); });
+  onSnapshot(doc(db, 'config', 'emergency'), s => { S.emergency = s.data()?.c || []; renderEmergency(); });
+  onSnapshot(doc(db, 'config', 'meta'), s => { S.meta = s.data() || {}; if (current === 'setup') drawMergeList($('#tab-setup')); });
   onSnapshot(collection(db, 'lists'), qs => { S.lists = qs.docs.map(d => ({ id: d.id, ...d.data() })); S.ready.lists = true; renderBank(); renderRequests(); renderMyTakes(); updateNotices(); });
   onSnapshot(collection(db, 'stock'), qs => { const st = {}; qs.forEach(d => { const v = d.data(); st[v.loc] = v.q || {}; }); S.stock = st; S.ready.stock = true; refresh(); });
 }
@@ -109,6 +112,7 @@ async function voidMovement(id, data) {
   const b = writeBatch(db);
   b.set(doc(db, 'movements', id), { voided: true, voidedBy: S.name || '', voidedAt: serverTimestamp() }, { merge: true });
   applyStock(b, data.lines, -1);
+  if (data.merge?.from) b.set(doc(db, 'config', 'items'), { i: { [data.merge.from]: { a: true, into: '' } } }, { merge: true });   // undoing an item merge
   await b.commit();
 }
 
@@ -254,7 +258,7 @@ function renderStock() {
   const v = S.view;
   if (v.loc !== 'all' && !S.locs[v.loc]) v.loc = 'all';
   const tot = l => Object.values(S.stock[l] || {}).reduce((a, b) => a + num(b), 0);
-  const allItems = [...new Set([...itemNames(), ...locs.flatMap(l => Object.keys(S.stock[l] || {}))])].sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }));
+  const allItems = [...new Set([...itemNames(), ...locs.flatMap(l => Object.keys(S.stock[l] || {}))])].filter(i => !(S.items[i]?.into && locs.every(l => qty(l, i) === 0))).sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }));
   const cols = v.loc === 'all' ? locs : [v.loc];
   const q = v.q.toLowerCase();
   const rows = allItems.filter(i => (!q || i.toLowerCase().includes(q)) && (!v.hideZero || cols.some(l => qty(l, i) !== 0)));
@@ -326,7 +330,9 @@ function lineEditor(host, { availLoc, label = 'Quantity' } = {}) {
     const name = norm(it.value); const q = num(qt.value);
     if (!name) { it.focus(); return; }
     if (!q || q < 0) { qt.focus(); toast('Enter a quantity'); return; }
-    const known = Object.keys(S.items).find(n => n.toLowerCase() === name.toLowerCase());
+    const known0 = Object.keys(S.items).find(n => n.toLowerCase() === name.toLowerCase());
+    const known = known0 && canon(known0);
+    if (known0 && known !== known0) toast(`${known0} was merged into ${known} – booked as ${known}`, 5000);
     const nm = known || name;
     const ex = ed.lines.find(x => x.i === nm); if (ex) ex.q = num(ex.q + q); else ed.lines.push({ i: nm, q, isNew: !known });
     it.value = ''; qt.value = ''; it.focus(); draw();
@@ -413,7 +419,8 @@ function deliveryNote({ date, from, to, note, items, by }) {
   const text = `Isaac's Food Bank – delivery\n${fmtDate(date)}\nFrom: ${from}\nTo: ${locLabel(to)}${L.addr ? '\n' + L.addr : ''}${note ? '\nNote: ' + note : ''}${by ? '\nSent by: ' + by : ''}\n\n` +
     items.map(([i, q]) => `${q} × ${i}`).join('\n') + `\n\n${items.length} item${items.length === 1 ? '' : 's'}, ${num(items.reduce((a, x) => a + x[1], 0))} units`;
   const m = modal(`<h2>Delivery list</h2><pre class="note" id="dn">${esc(text)}</pre>
-    <p class="noprint"><button class="btn" id="dnShare">Share</button> <button class="btn g" id="dnCopy">Copy</button> <button class="btn g" id="dnPrint">Print</button></p>`);
+    <p class="noprint dnbtns"><button class="btn" id="dnShare">Share</button><button class="btn g" id="dnCopy">Copy</button><button class="btn g" id="dnPrint">Print</button><button class="btn" id="dnOk">OK</button></p>`);
+  $('#dnOk', m).onclick = closeModal;
   $('#dnShare', m).onclick = async () => { if (navigator.share) { try { await navigator.share({ title: 'Delivery list', text }); } catch { } } else { location.href = 'https://wa.me/?text=' + encodeURIComponent(text); } };
   $('#dnCopy', m).onclick = async () => { await navigator.clipboard.writeText(text); toast('Copied'); };
   $('#dnPrint', m).onclick = () => print();
@@ -635,17 +642,15 @@ function renderSetup() {
       <div class="tablewrap" style="max-height:50vh;margin-top:10px"><table><thead><tr><th>Name</th><th>Default food bank</th><th>In use</th><th>Last used</th></tr></thead><tbody id="usRows">
       ${users.map(u => `<tr data-u="${esc(u.id)}" class="${u.active === false ? 'off' : ''}"><td>${esc(u.name)}</td><td><select data-uf="bank">${bankOpts(u.bank || '')}</select></td><td><input type="checkbox" data-uf="active" ${u.active !== false ? 'checked' : ''}></td><td>${u.seen ? fmtTs(u.seen) : '<span class="muted">not yet</span>'}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No users yet – add them above.</td></tr>'}
       </tbody></table></div></div>
-    <div class="card"><h3 style="margin-top:0">Contacts</h3>
-      <p class="small muted">Shown in everyone's Contacts tab. Changes save when you leave a box.</p>
-      <div class="tablewrap"><table><thead><tr><th>Name</th><th>Role / organisation</th><th>Phone</th><th>Email</th><th>Notes</th><th></th></tr></thead><tbody id="ecRows">
-      ${S.emergency.map((c, k) => `<tr data-k="${k}">${['name', 'role', 'phone', 'email', 'notes'].map(f => `<td><input data-ec="${f}" value="${esc(c[f] || '')}"></td>`).join('')}<td><button class="link" data-ecdel="${k}">Delete</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No contacts yet.</td></tr>'}
-      </tbody></table></div>
-      <p><button class="btn sm" id="ecAdd">+ Add contact</button></p></div>
     <div class="card"><h3 style="margin-top:0">Items (${items.length})</h3>
       <p class="small muted">Untick an item to hide it from the item lists (its stock and history stay). New items can also be typed straight into a booking.</p>
       <div class="row"><label>New item<input id="newItem"></label><button class="btn sm" id="addItem">Add item</button><label>Search<input id="itQ"></label></div>
       <div class="tablewrap" style="max-height:50vh;margin-top:10px"><table><thead><tr><th>Item</th><th>Total stock</th><th>In use</th></tr></thead><tbody id="itRows"></tbody></table></div>
     </div>
+    <div class="card"><h3 style="margin-top:0">Merge items</h3>
+      <p class="small muted">Join two items that are really the same thing (e.g. a spelling mistake from the spreadsheet). The stock of the first one is moved into the second at every location with one booking, the first is hidden, and lists not yet accepted are changed to the new name. Past bookings keep their old name, but Reports count them under the new one. Undo the merge booking in History to put it back.</p>
+      <div class="row"><label>Merge<input id="mgFrom" placeholder="item to remove"></label><label>into<input id="mgInto" placeholder="item to keep"></label><button class="btn sm" id="mgGo">Merge</button></div>
+      <h4 style="margin:14px 0 6px">Possible duplicates</h4><div id="mgList"></div></div>
     <div class="card"><h3 style="margin-top:0">Backup</h3>
       <p class="small muted"><b>Download backup</b> saves everything (items, locations, donors, stock, lists, users, contacts and all bookings) as one file, and also keeps a copy inside Firebase that only an admin can see.<br>
       <b>Import backup</b> makes the live data exactly the same as a backup file – for everyone. Anything added since that backup is deleted. A copy of the data as it is now is downloaded and kept in Firebase first.</p>
@@ -668,10 +673,6 @@ function renderSetup() {
       toast(cur ? `${cur.name} is back on the list` : `${n} added`);
     } catch (err) { toast('Not added: ' + err.message, 5000); }
   };
-  const saveEc = list => setDoc(doc(db, 'config', 'emergency'), { c: list }).then(() => toast('Saved'));
-  $('#ecAdd', el).onclick = () => saveEc([...S.emergency, { name: 'New contact', role: '', phone: '', email: '', notes: '' }]);
-  $('#ecRows', el).addEventListener('change', e => { const k = e.target.closest('tr')?.dataset.k; const f = e.target.dataset.ec; if (k === undefined || !f) return; const list = S.emergency.map(c => ({ ...c })); list[k][f] = norm(e.target.value); saveEc(list); });
-  $('#ecRows', el).addEventListener('click', e => { const k = e.target.dataset.ecdel; if (k === undefined) return; if (!confirmBox(`Delete ${S.emergency[k].name || 'this contact'}?`)) return; saveEc(S.emergency.filter((_, j) => j !== +k)); });
   el.querySelector('tbody').addEventListener('change', e => {
     const tr = e.target.closest('tr'); const n = tr.dataset.l; const f = e.target.dataset.f; if (!n || !f) return;
     const val = f === 'a' ? e.target.checked : (e.target.value ?? '').trim();
@@ -688,11 +689,20 @@ function renderSetup() {
     setDoc(doc(db, 'config', 'items'), { i: { [n]: { a: true } } }, { merge: true }).then(() => toast('Item added'));
   };
   $('#itRows', el).addEventListener('change', e => { const i = e.target.dataset.item; if (i) setDoc(doc(db, 'config', 'items'), { i: { [i]: { a: e.target.checked } } }, { merge: true }).then(() => toast('Saved')); });
+  drawMergeList(el);
+  itemPicker($('#mgFrom', el), { strict: () => true }); itemPicker($('#mgInto', el), { strict: () => true });
+  $('#mgGo', el).onclick = () => {
+    const a = findItem($('#mgFrom', el).value), b = findItem($('#mgInto', el).value);
+    if (!a || !b) return toast('Pick both items from the list');
+    if (a === b) return toast('Pick two different items');
+    mergeItems(a, b);
+  };
   $('#bk', el).onclick = async () => {
     toast('Preparing backup…');
     try {
       const data = await collectBackup();
       downloadJson(data, `Food Bank backup ${today()} v${APP_VERSION}.json`);
+      toast('Downloaded – now keeping a copy in Firebase, please keep this page open…', 20000);
       await saveFirebaseBackup(data, 'download');
       toast('Backup downloaded and a copy kept in Firebase');
     } catch (e) { toast('Backup failed: ' + e.message, 6000); }
@@ -701,6 +711,71 @@ function renderSetup() {
   $('#bkFile', el).onchange = e => { const f = e.target.files[0]; if (f) importBackup(f); };
 }
 
+
+// ---------- Merge items (v1.5) ----------
+const itemTotal = i => num(locNames(true).reduce((a, l) => a + qty(l, i), 0));
+const mgKey = (a, b) => [a, b].sort().join('|');
+// pairs of items that look like the same thing (only suggestions – Simon decides):
+//  - the same words in any order, ignoring "&/and", plurals and small words (Noodles Wet / Wet Noodles)
+//  - one word different by a typing slip, same first letter (Lentles / Lentils)
+//  - a number typed twice by mistake (Stage 2 / Stage 22) – other different numbers are different items
+//  - "Baby Milk …" and the same name without "Baby Milk"
+function nearDupes() {
+  const names = Object.keys(S.items).filter(n => !S.items[n].into), skip = new Set(S.meta?.notDup || []);
+  const SMALL = ['of', 'the', 'a', 'all'];   // "and" counts (Pasta and Sauce is not Pasta Sauce); & is read as and
+  const words = n => [...new Set(n.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9 ]+/g, ' ').split(' ').filter(w => w && !SMALL.includes(w)).map(w => w === 'dried' ? 'dry' : w))];
+  const st2 = w => /^\d+$/.test(w) ? w : stem(w);
+  const numSlip = (a, b) => /^\d+$/.test(a) && /^\d+$/.test(b) && Math.abs(a.length - b.length) === 1 && (a.startsWith(b) || b.startsWith(a)) && /^(\d)\1+$/.test(a.length > b.length ? a.slice(-2) : b.slice(-2));
+  const wordSlip = (a, b) => !/\d/.test(a + b) && a[0] === b[0] && Math.min(a.length, b.length) >= 5 && lev(a, b) <= (Math.min(a.length, b.length) >= 7 ? 2 : 1);
+  const out = [];
+  const W = Object.fromEntries(names.map(n => [n, words(n)]));
+  for (let i = 0; i < names.length; i++) for (let j = i + 1; j < names.length; j++) {
+    const a = names[i], b = names[j]; if (skip.has(mgKey(a, b))) continue;
+    const wa = W[a], wb = W[b]; if (!wa.length || !wb.length) continue;
+    const sa = wa.map(st2).sort().join(' '), sb = wb.map(st2).sort().join(' ');
+    let same = sa === sb;
+    if (!same && wa.length === wb.length) {
+      const da = wa.filter(w => !wb.includes(w)), db = wb.filter(w => !wa.includes(w));
+      same = da.length === 1 && db.length === 1 && (numSlip(da[0], db[0]) || wordSlip(da[0], db[0]));
+    }
+    if (!same) { const bm = x => x.toLowerCase().replace(/^baby milk /, '').replace(/&/g, 'and').replace(/\s+/g, ' ').trim(); same = /^baby milk /i.test(a) !== /^baby milk /i.test(b) && bm(a) === bm(b); }
+    if (same) out.push([a, b]);
+  }
+  return out;
+}
+function drawMergeList(el) {
+  const box = $('#mgList', el); if (!box) return;
+  const pairs = nearDupes();
+  box.innerHTML = pairs.length ? `<div class="tablewrap" style="max-height:50vh"><table><thead><tr><th>Item</th><th>Stock</th><th>Item</th><th>Stock</th><th></th></tr></thead><tbody>
+    ${pairs.map(([a, b]) => `<tr data-a="${esc(a)}" data-b="${esc(b)}"><td>${esc(a)}${S.items[a].a === false ? ' <span class="pill st">hidden</span>' : ''}</td><td>${itemTotal(a)}</td><td>${esc(b)}${S.items[b].a === false ? ' <span class="pill st">hidden</span>' : ''}</td><td>${itemTotal(b)}</td>
+      <td class="nowrap"><button class="btn sm g" data-keep="a">Keep left</button> <button class="btn sm g" data-keep="b">Keep right</button> <button class="link" data-nd="1">Not the same</button></td></tr>`).join('')}</tbody></table></div>`
+    : '<p class="small muted">None found.</p>';
+  box.onclick = e => {
+    const tr = e.target.closest('tr'); if (!tr) return;
+    const a = tr.dataset.a, b = tr.dataset.b;
+    if (e.target.dataset.keep === 'a') mergeItems(b, a);
+    else if (e.target.dataset.keep === 'b') mergeItems(a, b);
+    else if (e.target.dataset.nd) setDoc(doc(db, 'config', 'meta'), { notDup: arrayUnion(mgKey(a, b)) }, { merge: true }).then(() => { (S.meta ||= {}).notDup = [...(S.meta.notDup || []), mgKey(a, b)]; drawMergeList(el); toast('Taken off the list'); });
+  };
+}
+async function mergeItems(from, into) {
+  const locs = Object.keys(S.stock).filter(l => qty(l, from) !== 0);
+  const lists = S.lists.filter(l => (l.status === 'draft' || l.status === 'submitted') && l.lines.some(x => x.i === from));
+  if (!confirmBox(`Merge "${from}" into "${into}"?\n\n${locs.length ? `Stock moved: ${locs.map(l => `${l} ${qty(l, from)}`).join(', ')}.` : 'There is no stock of it anywhere.'}${lists.length ? `\n${lists.length} list(s) not yet accepted will be changed to "${into}".` : ''}\n"${from}" is then hidden. The merge can be undone in History.`)) return;
+  const b = writeBatch(db);
+  let id = null;
+  if (locs.length) id = addMovement(b, { type: 'other', note: `Item merge – ${from} into ${into}`, date: today(), lines: locs.flatMap(l => [{ l, i: from, q: -qty(l, from) }, { l, i: into, q: qty(l, from) }]), extra: { merge: { from, into } } });
+  // the old name points at the new one (and anything that pointed at the old name follows)
+  const upd = { [from]: { a: false, into }, [into]: { a: true } };
+  for (const [n, v] of Object.entries(S.items)) if (v.into === from) upd[n] = { a: false, into };
+  b.set(doc(db, 'config', 'items'), { i: upd }, { merge: true });
+  for (const l of lists) {
+    const lines = [];
+    for (const x of l.lines) { const y = { ...x, i: x.i === from ? into : x.i }; const ex = lines.find(z => z.i === y.i); if (ex) { ex.q = num(ex.q + y.q); if ('book' in ex) ex.book = num((ex.book || 0) + (y.book || 0)); } else lines.push(y); }
+    b.update(doc(db, 'lists', l.id), { lines });
+  }
+  try { await b.commit(); toast(`${from} merged into ${into}`); } catch (e) { toast('Not merged: ' + e.message, 6000); }
+}
 // ---------- Backups (v1.4): download, copy kept inside Firebase, import ----------
 // A backup file is the same format as Download backup has always made (v1.0 on): times are written as ISO text.
 const BK_COLS = ['movements', 'lists', 'users', 'stock'];
@@ -730,9 +805,12 @@ function bkSummary(d) {
 async function saveFirebaseBackup(data, reason) {
   const s = JSON.stringify(data), size = 300000, n = Math.ceil(s.length / size);
   const id = new Date().toISOString().replace(/[:.]/g, '-') + '-' + slug(S.name || 'unknown');
-  for (let k = 0; k < n; k++) await setDoc(doc(db, 'backups', id, 'parts', String(k).padStart(3, '0')), { k, n, data: s.slice(k * size, (k + 1) * size) });
+  // v1.5: one write for all the parts and the summary – a backup is saved whole or not at all
+  const b = writeBatch(db);
+  for (let k = 0; k < n; k++) b.set(doc(db, 'backups', id, 'parts', String(k).padStart(3, '0')), { k, n, data: s.slice(k * size, (k + 1) * size) });
   const sm = bkSummary(data);
-  await setDoc(doc(db, 'backups', id), { at: serverTimestamp(), by: S.name || '', ver: APP_VERSION, reason, parts: n, chars: s.length, taken: data.exported || '', counts: { bookings: sm.bookings, lists: sm.lists, users: sm.users, items: sm.items }, totals: sm.totals });
+  b.set(doc(db, 'backups', id), { at: serverTimestamp(), by: S.name || '', ver: APP_VERSION, reason, parts: n, chars: s.length, taken: data.exported || '', counts: { bookings: sm.bookings, lists: sm.lists, users: sm.users, items: sm.items }, totals: sm.totals });
+  await b.commit();
   return id;
 }
 async function importBackup(file) {
@@ -854,9 +932,9 @@ async function runReport() {
     const rows = {}; const T = { rec: 0, don: 0, given: 0, out: 0, sent: 0, plus: 0, n: 0 };
     const row = i => (rows[i] ||= { rec: 0, don: 0, given: 0, out: 0, sent: 0, plus: 0 });
     qs.forEach(d => {
-      const m = d.data(); if (m.voided || m.date < R.from || m.date > R.to) return; T.n++;
+      const m = d.data(); if (m.voided || m.merge || m.date < R.from || m.date > R.to) return; T.n++;
       for (const x of m.lines) {
-        if (x.l !== L) continue; const r = row(x.i), q = x.q;
+        if (x.l !== L) continue; const r = row(canon(x.i)), q = x.q;
         const k = m.type === 'transfer' ? (q > 0 ? 'rec' : 'sent') : m.type === 'stocktake' ? (q < 0 ? 'given' : 'plus') : m.type === 'out' ? 'out' : (q > 0 ? 'don' : 'out');
         r[k] += Math.abs(q); T[k] += Math.abs(q);
       }
@@ -938,7 +1016,7 @@ async function drawMgrReport() {
   const L = MR.loc, year = new Date().getFullYear(), P = periods(MR.mode, year, []), vals = new Array(P.labels.length).fill(0);
   try {
     const qs = await getDocs(query(collection(db, 'movements'), where('locs', 'array-contains', L)));
-    qs.forEach(d => { const m = d.data(); if (m.voided) return; const i = P.key(m.date || ''); if (i < 0 || i >= vals.length) return; for (const x of m.lines) if (x.l === L && isIn(m, x)) vals[i] += x.q; });
+    qs.forEach(d => { const m = d.data(); if (m.voided || m.merge) return; const i = P.key(m.date || ''); if (i < 0 || i >= vals.length) return; for (const x of m.lines) if (x.l === L && isIn(m, x)) vals[i] += x.q; });
     if ($('#mrOut') !== out || MR.loc !== L) return;
     out.innerHTML = barChart({ title: `${locLabel(L)} – items booked in, ${year}`, labels: P.labels, series: [{ name: 'Booked in', cls: 'in', values: vals.map(num) }], tableOpen: MR.mode === 'month' });
   } catch (e) { out.innerHTML = `<p class="warn">Could not make the graph: ${esc(e.message)}</p>`; }
@@ -950,7 +1028,7 @@ async function renderSimonGraphs(reload) {
   const box = $('#sgOut'); if (!box) return;
   if (reload || !SG.mv || Date.now() - SG.at > 10 * 60000) {
     box.innerHTML = '<p class="muted">Loading all bookings…</p>';
-    try { const qs = await getDocs(collection(db, 'movements')); SG.mv = qs.docs.map(d => d.data()).filter(m => !m.voided && m.date); SG.at = Date.now(); }
+    try { const qs = await getDocs(collection(db, 'movements')); SG.mv = qs.docs.map(d => d.data()).filter(m => !m.voided && !m.merge && m.date); SG.at = Date.now(); }
     catch (e) { box.innerHTML = `<p class="warn">Could not load the bookings: ${esc(e.message)}</p>`; return; }
     if ($('#sgOut') !== box) return;
   }
@@ -959,11 +1037,16 @@ async function renderSimonGraphs(reload) {
   if (!years.includes(SG.year)) SG.year = now;
   const P = periods(SG.mode, SG.year, years), n = P.labels.length, z = () => new Array(n).fill(0);
   const kind = l => S.locs[l]?.kind, banks = bankNames();
-  const A = { mainIn: z(), mainOut: z(), stIn: z(), stOut: z(), bankIn: z(), given: z(), each: Object.fromEntries(banks.map(b => [b, z()])) };
+  const A = { mainIn: z(), mainOut: z(), stIn: z(), stOut: z(), bankIn: z(), given: z(), each: Object.fromEntries(banks.map(b => [b, z()])), don: z(), direct: z(), eachDirect: Object.fromEntries(banks.map(b => [b, z()])) };
   for (const m of SG.mv) {
     const i = P.key(m.date); if (i < 0 || i >= n) continue;
+    // v1.5: donations booked in (not the ones from food banks' donation lists) and direct donations
+    // (food banks' donation lists accepted by Simon: the transfer from Donation to the food bank)
+    const directList = m.type === 'transfer' && m.listId && m.lines.some(y => kind(y.l) === 'donation');
     for (const x of m.lines) {
       const k = kind(x.l);
+      if (m.type === 'donation' && x.q > 0 && k !== 'donation') A.don[i] += x.q;
+      if (directList && x.q > 0 && k === 'bank') { A.direct[i] += x.q; if (A.eachDirect[x.l]) A.eachDirect[x.l][i] += x.q; }
       if (k === 'store') { const main = x.l === 'Main Storage'; if (isIn(m, x)) (main ? A.mainIn : A.stIn)[i] += x.q; if (isOut(m, x)) (main ? A.mainOut : A.stOut)[i] -= x.q; }
       else if (k === 'bank') { if (isIn(m, x)) { A.bankIn[i] += x.q; if (A.each[x.l]) A.each[x.l][i] += x.q; } if (isGiven(m, x)) A.given[i] -= x.q; }
     }
@@ -974,11 +1057,15 @@ async function renderSimonGraphs(reload) {
   box.innerHTML = `<div class="card"><div class="row">${modeBtns(SG.mode, [['week', 'Weekly'], ['month', 'Monthly'], ['year', 'Yearly']])}
       ${SG.mode !== 'year' ? `<label style="flex:0 0 auto">Year<select id="sgYear">${years.map(y => `<option ${y === SG.year ? 'selected' : ''}>${y}</option>`).join('')}</select></label>` : ''}
       <button class="btn g sm" id="sgRe">Refresh</button></div>
-      <p class="small muted" style="margin:8px 0 0">Units. Undone bookings and the starting stock from the spreadsheet are left out. "In" and "out" of storage leave out stock-take differences; "given out" at food banks comes from stock takes (counted lower than the app) and Book Out. The data starts in ${first}${first === 2024 ? ' (April)' : ''}.</p></div>
+      <p class="small muted" style="margin:8px 0 0">Units. Undone bookings, item merges and the starting stock from the spreadsheet are left out. "Donations" are donations booked in (Book In and the spreadsheet); "direct donations" are the food banks' donation lists Simon accepted – each counted once. "In" and "out" of storage leave out stock-take differences; "given out" at food banks comes from stock takes (counted lower than the app) and Book Out. The data starts in ${first}${first === 2024 ? ' (April)' : ''}.</p></div>
     ${barChart({ title: `Main Storage – in and out, ${per}`, labels: P.labels, series: [{ name: 'In', cls: 'in', values: r(A.mainIn) }, { name: 'Out', cls: 'out', values: r(A.mainOut) }], tableOpen: open })}
     ${others.length ? barChart({ title: `${others.join(', ')} – in and out, ${per}`, labels: P.labels, series: [{ name: 'In', cls: 'in', values: r(A.stIn) }, { name: 'Out', cls: 'out', values: r(A.stOut) }], tableOpen: open }) : ''}
     ${barChart({ title: `All food banks – items booked in, ${per}`, labels: P.labels, series: [{ name: 'Booked in', cls: 'in', values: r(A.bankIn) }], tableOpen: open })}
     ${barChart({ title: `All food banks – items given out, ${per}`, labels: P.labels, series: [{ name: 'Given out', cls: 'out', values: r(A.given) }], tableOpen: open })}
+    ${barChart({ title: `Donations – booked in, ${per}`, labels: P.labels, series: [{ name: 'Donations', cls: 'don', values: r(A.don) }], tableOpen: open })}
+    ${barChart({ title: `Direct donations – food banks' donation lists, ${per}`, labels: P.labels, series: [{ name: 'Direct donations', cls: 'dir', values: r(A.direct) }], tableOpen: open })}
+    <h3>Each food bank – direct donations, ${per}</h3>
+    <div class="chartgrid">${banks.map(b => barChart({ title: locLabel(b), labels: P.labels, series: [{ name: 'Direct donations', cls: 'dir', values: r(A.eachDirect[b]) }], small: true, tableOpen: false })).join('')}</div>
     <h3>Each food bank – items booked in, ${per}</h3>
     <div class="chartgrid">${banks.map(b => barChart({ title: locLabel(b), labels: P.labels, series: [{ name: 'Booked in', cls: 'in', values: r(A.each[b]) }], small: true, tableOpen: false })).join('')}</div>`;
   box.querySelector('.seg').onclick = e => { const m = e.target.dataset.mode; if (m) { SG.mode = m; renderSimonGraphs(); } };
@@ -993,8 +1080,19 @@ function renderEmergency() {
     ${S.emergency.length ? `<div class="ec">${S.emergency.map(c => `<div class="card"><h3>${esc(c.name)}</h3>${c.role ? `<div class="muted">${esc(c.role)}</div>` : ''}
       ${c.phone ? `<a class="tel" href="tel:${esc(c.phone.replace(/[^0-9+]/g, ''))}">📞 ${esc(c.phone)}</a>` : ''}
       ${c.email ? `<div><a href="mailto:${esc(c.email)}">${esc(c.email)}</a></div>` : ''}${c.notes ? `<p class="small">${esc(c.notes)}</p>` : ''}</div>`).join('')}</div>`
-    : `<div class="card muted">The contact list hasn't been added yet.${S.role === 'simon' ? ' Add contacts in Setup › Contacts.' : ''}</div>`}
-    <p class="small muted">In an emergency where someone is in danger, call 999.</p>`;
+    : `<div class="card muted">The contact list hasn't been added yet.${viewOf() === 'simon' ? ' Add contacts below.' : ''}</div>`}
+    <p class="small muted">In an emergency where someone is in danger, call 999.</p>
+    ${viewOf() === 'simon' ? `<div class="card"><h3 style="margin-top:0">Change the contacts</h3>
+      <p class="small muted">The list above is what everyone sees. Changes save when you leave a box.</p>
+      <div class="tablewrap"><table><thead><tr><th>Name</th><th>Role / organisation</th><th>Phone</th><th>Email</th><th>Notes</th><th></th></tr></thead><tbody id="ecRows">
+      ${S.emergency.map((c, k) => `<tr data-k="${k}">${['name', 'role', 'phone', 'email', 'notes'].map(f => `<td><input data-ec="${f}" value="${esc(c[f] || '')}"></td>`).join('')}<td><button class="link" data-ecdel="${k}">Delete</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No contacts yet.</td></tr>'}
+      </tbody></table></div>
+      <p><button class="btn sm" id="ecAdd">+ Add contact</button></p></div>` : ''}`;
+  if (viewOf() !== 'simon') return;
+  const saveEc = list => setDoc(doc(db, 'config', 'emergency'), { c: list }).then(() => toast('Saved')).catch(e => toast('Not saved: ' + e.message, 5000));
+  $('#ecAdd', el).onclick = () => saveEc([...S.emergency, { name: 'New contact', role: '', phone: '', email: '', notes: '' }]);
+  $('#ecRows', el).addEventListener('change', e => { const k = e.target.closest('tr')?.dataset.k; const f = e.target.dataset.ec; if (k === undefined || !f) return; const list = S.emergency.map(c => ({ ...c })); list[k][f] = norm(e.target.value); saveEc(list); });
+  $('#ecRows', el).addEventListener('click', e => { const k = e.target.dataset.ecdel; if (k === undefined) return; if (!confirmBox(`Delete ${S.emergency[k].name || 'this contact'}?`)) return; saveEc(S.emergency.filter((_, j) => j !== +k)); });
 }
 
 // ---------- item picker (v1.3): the app's own pop-up list instead of the browser's – works properly on phones ----------
@@ -1229,7 +1327,7 @@ function renderBank(force) {
   if (!S.ready.locs || !S.ready.items) { el.innerHTML = '<p class="muted">Loading…</p>'; return; }
   if (!el.dataset.init || force) {
     el.dataset.init = '1';
-    el.innerHTML = `<h2>Food Bank</h2><p class="muted">Make a shopping list of what your food bank needs and send it to Simon. Use <b>Donation</b> for things given straight to you that never went through storage. Lists save as you type.${SR ? ' Tap 🎤 on a list and read your items out, e.g. "10 beans, 6 pasta, 4 tomato soup" – you can scroll around while it listens. Anything it isn\'t sure of is highlighted yellow: check those before you Submit.' : ''}</p>
+    el.innerHTML = `<h2>Food Bank</h2><p class="muted">Make a shopping list of the items your food bank needs. The list stays saved until you submit it, so you can come back and change it. Once you have picked the items and checked they are available, tap <b>Submit</b> and Simon will approve it.<br>Use <b>New donation list</b> for anything donated straight to your food bank – for example, a bag left at the door. These are counted differently for Simon, so please log them this way.<br>${SR ? ' Tap 🎤 on a list and read your items out, e.g. "10 beans, 6 pasta, 4 tomato soup" – you can scroll around while it listens. Anything it isn\'t sure of is highlighted yellow: check those before you Submit.' : ''}</p>
       <p class="noprint"><button class="btn" id="newList">+ New shopping list</button> <button class="btn p" id="newDon">+ New donation list</button> <button class="btn g" id="toggleDone"></button></p>
       <div class="lists" id="listsBox"></div><p class="muted small" id="listsNone"></p>`;
     $('#newList', el).onclick = () => newList(false);
@@ -1429,6 +1527,8 @@ function renderRequests() {
     ${done.length ? `<h3>Recently decided</h3><div class="card">${done.map(l => { const n = (l.acceptedLines || l.lines).length; return `<div class="hist req ${reqCls(l)}" data-id="${l.id}"><div class="h1"><b>${fmtTs(l.decidedAt)}</b><span class="status ${l.status}">${STATUS[l.status]}</span><span><b>${reqKind(l)}</b> · ${reqWhere(l)}</span></div><div class="small muted">${esc(l.by)} · ${n} item${n === 1 ? '' : 's'}${l.reopened ? ' · reopened ' + l.reopened + '×' : ''}${l.reason ? ' · ' + esc(l.reason) : ''}</div></div>`; }).join('')}</div>` : ''}`;
   el.querySelectorAll('.card.req').forEach(card => {
     const l = S.lists.find(x => x.id === card.dataset.id);
+    // a number Simon changes from what was asked for (or counted) is marked "Adjusted"
+    card.addEventListener('input', e => { const a = e.target.dataset.ask; if (a !== undefined) e.target.closest('tr').classList.toggle('adj', e.target.value === '' || num(e.target.value) !== num(a)); });
     $('.acc', card).onclick = () => acceptRequest(l, card);
     $('.rej', card).onclick = () => rejectRequest(l, card);
   });
@@ -1440,10 +1540,10 @@ function reqCard(l) {
   let table;
   if (l.kind === 'stocktake') {
     table = `<thead><tr><th>Item</th><th>App says now</th><th>Counted</th><th>Change</th></tr></thead><tbody>
-      ${l.lines.map((x, k) => { const now = qty(l.loc, x.i); const c = val(x.i); const d = num(c - now); return `<tr><td>${esc(x.i)}</td><td class="${now < 0 ? 'neg' : ''}">${now}</td><td><input type="number" min="0" data-k="${k}" value="${c}"></td><td>${d ? (d > 0 ? '+' : '') + d : ''}</td></tr>`; }).join('')}</tbody>`;
+      ${l.lines.map((x, k) => { const now = qty(l.loc, x.i); const c = val(x.i); const d = num(c - now); return `<tr class="${num(c) !== num(x.q) ? 'adj' : ''}"><td>${esc(x.i)}</td><td class="${now < 0 ? 'neg' : ''}">${now}</td><td><input type="number" min="0" data-k="${k}" data-ask="${x.q}" value="${c}"><span class="adjtag">Adjusted</span></td><td>${d ? (d > 0 ? '+' : '') + d : ''}</td></tr>`; }).join('')}</tbody>`;
   } else {
     table = `<thead><tr><th>Item</th><th>Asked for</th>${l.donation ? '' : `<th>${esc(l.from)} has</th>`}<th>${l.donation ? 'Book in' : 'Send'}</th></tr></thead><tbody>
-      ${l.lines.map((x, k) => { const av = l.donation ? null : qty(l.from, x.i); return `<tr><td>${esc(x.i)}</td><td>${x.q}</td>${av === null ? '' : `<td class="${av < x.q ? 'neg' : ''}">${av}</td>`}<td><input type="number" min="0" data-k="${k}" value="${val(x.i)}"></td></tr>`; }).join('')}</tbody>`;
+      ${l.lines.map((x, k) => { const av = l.donation ? null : qty(l.from, x.i); const v = val(x.i); return `<tr class="${num(v) !== num(x.q) ? 'adj' : ''}"><td>${esc(x.i)}</td><td>${x.q}</td>${av === null ? '' : `<td class="${av < x.q ? 'neg' : ''}">${av}</td>`}<td><input type="number" min="0" data-k="${k}" data-ask="${x.q}" value="${v}"><span class="adjtag">Adjusted</span></td></tr>`; }).join('')}</tbody>`;
   }
   return `<div class="card req ${reqCls(l)}" data-id="${l.id}">
     <div class="h1"><b>${reqKind(l)}</b> · ${reqWhere(l)}${l.reopened ? ' <span class="status draft">Reopened</span>' : ''}${l.reworked || l.redoOf ? ' <span class="status submitted">Sent again</span>' : ''}</div>
