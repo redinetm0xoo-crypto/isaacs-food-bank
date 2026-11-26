@@ -5,8 +5,8 @@ import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, collection, onSnapshot,
   writeBatch, increment, serverTimestamp, query, orderBy, limit, startAfter, getDocs, getDoc, setDoc, addDoc, deleteDoc, updateDoc, where, arrayUnion, Timestamp
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
-import { FIREBASE_CONFIG } from './firebase-config.js?v=1.5';
-import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.5';
+import { FIREBASE_CONFIG } from './firebase-config.js?v=1.6';
+import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.6';
 
 // ---------- helpers ----------
 const $ = (s, el = document) => el.querySelector(s);
@@ -154,11 +154,26 @@ function refresh() {
   renderBank(); renderRequests();
   if (!refresh.once) { refresh.once = true; firstReady(); }
 }
+// v1.6: links in the notification emails – …/isaacs-food-bank/#req=<id> opens that request
+let LINK = (location.hash.match(/^#req=([\w-]+)/) || [])[1] || null;
+async function openLink() {
+  if (!LINK || !S.role) return;   // nobody has picked a view on this device yet – wait for that
+  if (viewOf() !== 'simon') { if (LINK && S.role === 'mgr') { toast("That link opens a request in Simon's view – use Switch view at the top to see it", 8000); LINK = null; history.replaceState(null, '', location.pathname); } return; }
+  for (let i = 0; i < 40 && !S.ready.lists; i++) await new Promise(r => setTimeout(r, 250));
+  const id = LINK; LINK = null; history.replaceState(null, '', location.pathname);
+  const l = S.lists.find(x => x.id === id);
+  if (!l) return toast("That request isn't there any more (it may have been deleted)", 6000);
+  if (l.status === 'submitted') {
+    showTab('requests');
+    setTimeout(() => { const c = document.querySelector(`.card.req[data-id="${id}"]`); if (c) { c.scrollIntoView({ behavior: 'smooth', block: 'start' }); c.classList.add('flash'); setTimeout(() => c.classList.remove('flash'), 4000); } }, 150);
+  } else { showTab('requests'); requestModal(l); toast(`This request has already been ${STATUS[l.status]?.toLowerCase() || l.status}`, 5000); }
+}
+addEventListener('hashchange', () => { LINK = (location.hash.match(/^#req=([\w-]+)/) || [])[1] || null; if (LINK && refresh.once) openLink(); });
 function firstReady() {
   // the "Donation" stock location for direct donations
   if (!S.locs['Donation']) setDoc(doc(db, 'config', 'locations'), { l: { Donation: { kind: 'donation', site: 'Direct donations to food banks', addr: '', a: true, o: 90 } } }, { merge: true });
   if (!S.role) chooseRole();
-  else { applyView(); if (S.role === 'mgr' && !S.name) pickUser(); else recordUser(); }
+  else { applyView(); if (S.role === 'mgr' && !S.name) pickUser(); else recordUser(); openLink(); }
 }
 // keep a record of everyone who has entered a name (shown in Setup › Users) – one record per name,
 // so several people sharing a tablet are all kept
@@ -201,7 +216,7 @@ function chooseRole() {
   $('.rolepick', m).onclick = e => {
     const r = e.target.closest('button')?.dataset.r; if (!r) return;
     S.role = r; localStorage.setItem('fbm.role', r);
-    if (r === 'simon') { setName('Simon'); closeModal(); applyView(); recordUser(); }
+    if (r === 'simon') { setName('Simon'); closeModal(); applyView(); recordUser(); setTimeout(openLink, 400); }   // after the view has settled
     else { applyView(); pickUser(); }
   };
 }

@@ -196,3 +196,5 @@ tr.adj input{border-color:#d9a400}
 .chart rect.dir,.key.dir{fill:#7b52ab;background:#7b52ab}
 .nowrap{white-space:nowrap}
 #mgList td:nth-child(3),#mgList th:nth-child(3){text-align:left}
+.card.req.flash{animation:flash 1s 3}
+@keyframes flash{50%{box-shadow:0 0 0 6px rgba(242,184,75,.8)}}

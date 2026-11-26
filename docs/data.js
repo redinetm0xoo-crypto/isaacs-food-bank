@@ -1,8 +1,12 @@
 // Food Bank Manager – Friends of Isaac's Food Bank
 // Version and fixed data. Bump APP_VERSION and add to VERSION_HISTORY every release.
-export const APP_VERSION = '1.5';
+export const APP_VERSION = '1.6';
 
 export const VERSION_HISTORY = [
+  ['1.6', '26 Nov 2026', [
+    'Email notifications: when a shopping list, donation list or stock take is sent to Simon, an email goes out with the items and a button that opens that request in the app.',
+    'Links like …/isaacs-food-bank/#req=… open straight onto that request in Simon\'s Requests tab.',
+  ]],
   ['1.5', '26 Nov 2026', [
     "Simon's Report: new graphs for donations booked in and for direct donations (food banks' donation lists Simon accepted), including each food bank.",
     'Setup › Merge items: join two items that are really the same (with a list of possible duplicates). Stock is moved across with one booking that can be undone.',
