@@ -3,11 +3,11 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, collection, onSnapshot,
-  writeBatch, increment, serverTimestamp, query, orderBy, limit, startAfter, getDocs, getDoc, setDoc, addDoc, deleteDoc, updateDoc, where, arrayUnion, Timestamp
+  writeBatch, increment, deleteField, serverTimestamp, query, orderBy, limit, startAfter, getDocs, getDoc, setDoc, addDoc, deleteDoc, updateDoc, where, arrayUnion, Timestamp
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
-import { FIREBASE_CONFIG } from './firebase-config.js?v=1.9';
-import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.9';
-import { Workbook } from './excel.js?v=1.9';
+import { FIREBASE_CONFIG } from './firebase-config.js?v=1.10';
+import { APP_VERSION, VERSION_HISTORY, DEFAULT_LOCATIONS, TYPES, OUT_REASONS } from './data.js?v=1.10';
+import { Workbook } from './excel.js?v=1.10';
 
 // ---------- helpers ----------
 const $ = (s, el = document) => el.querySelector(s);
@@ -698,9 +698,9 @@ function renderSetup() {
       ${users.map(u => `<tr data-u="${esc(u.id)}" class="${u.active === false ? 'off' : ''}"><td>${esc(u.name)}</td><td><select data-uf="bank">${bankOpts(u.bank || '')}</select></td><td><input type="checkbox" data-uf="active" ${u.active !== false ? 'checked' : ''}></td><td>${u.seen ? fmtTs(u.seen) : '<span class="muted">not yet</span>'}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No users yet – add them above.</td></tr>'}
       </tbody></table></div></div>
     <div class="card"><h3 style="margin-top:0">Items (${items.length})</h3>
-      <p class="small muted">Untick an item to hide it from the item lists (its stock and history stay). New items can also be typed straight into a booking.</p>
+      <p class="small muted">Untick an item to hide it from the item lists (its stock and history stay). <b>Delete</b> removes an item completely – only when it has no stock anywhere and isn't on a request waiting for you; past bookings keep the name. New items can also be typed straight into a booking.</p>
       <div class="row"><label>New item<input id="newItem"></label><button class="btn sm" id="addItem">Add item</button><label>Search<input id="itQ"></label></div>
-      <div class="tablewrap" style="max-height:50vh;margin-top:10px"><table><thead><tr><th>Item</th><th>Total stock</th><th>In use</th></tr></thead><tbody id="itRows"></tbody></table></div>
+      <div class="tablewrap" style="max-height:50vh;margin-top:10px"><table><thead><tr><th>Item</th><th>Total stock</th><th>In use</th><th></th></tr></thead><tbody id="itRows"></tbody></table></div>
     </div>
     <div class="card"><h3 style="margin-top:0">Merge items</h3>
       <p class="small muted">Join two items that are really the same thing (e.g. a spelling mistake from the spreadsheet). The stock of the first one is moved into the second at every location with one booking, the first is hidden, and lists not yet accepted are changed to the new name. Past bookings keep their old name, but Reports count them under the new one. Undo the merge booking in History to put it back.</p>
@@ -710,7 +710,7 @@ function renderSetup() {
       <p class="small muted"><b>Download backup</b> saves everything (items, locations, donors, stock, lists, users, contacts and all bookings) as one file, and also keeps a copy inside Firebase that only an admin can see.<br>
       <b>Import backup</b> makes the live data exactly the same as a backup file – for everyone. Anything added since that backup is deleted. A copy of the data as it is now is downloaded and kept in Firebase first.</p>
       <button class="btn g sm" id="bk">Download backup</button> <button class="btn r sm" id="bkIn">Import backup…</button><input type="file" id="bkFile" accept=".json,application/json" hidden></div>`;
-  const drawItems = q => { $('#itRows', el).innerHTML = items.filter(i => !q || i.toLowerCase().includes(q)).map(i => { const t = num(locNames(true).reduce((a, l) => a + qty(l, i), 0)); return `<tr><td>${esc(i)}</td><td class="${t < 0 ? 'neg' : ''}">${t}</td><td><input type="checkbox" data-item="${esc(i)}" ${S.items[i].a !== false ? 'checked' : ''}></td></tr>`; }).join(''); };
+  const drawItems = q => { $('#itRows', el).innerHTML = items.filter(i => !q || i.toLowerCase().includes(q)).map(i => { const t = num(locNames(true).reduce((a, l) => a + qty(l, i), 0)); return `<tr><td>${esc(i)}</td><td class="${t < 0 ? 'neg' : ''}">${t}</td><td><input type="checkbox" data-item="${esc(i)}" ${S.items[i].a !== false ? 'checked' : ''}></td><td><button class="link" data-delitem="${esc(i)}">Delete</button></td></tr>`; }).join(''); };
   drawItems('');
   $('#itQ', el).oninput = e => drawItems(e.target.value.toLowerCase());
   $('#usRows', el).addEventListener('change', e => {
@@ -743,6 +743,18 @@ function renderSetup() {
     if (Object.keys(S.items).some(x => x.toLowerCase() === n.toLowerCase())) return toast('That item already exists');
     setDoc(doc(db, 'config', 'items'), { i: { [n]: { a: true } } }, { merge: true }).then(() => toast('Item added'));
   };
+  // v1.10: delete an item – only with no stock anywhere and not on a request waiting for Simon
+  $('#itRows', el).addEventListener('click', async e => {
+    const i = e.target.dataset.delitem; if (!i) return;
+    const have = locNames(true).filter(l => qty(l, i) !== 0).map(l => `${l} has ${qty(l, i)}`);
+    const waiting = S.lists.filter(l => l.status === 'submitted' && (l.lines || []).some(x => x.i === i)).map(l => `${l.kind === 'stocktake' ? 'stock take' : l.donation ? 'donation list' : 'list'} from ${l.by || '?'}`);
+    if (have.length || waiting.length) return toast(`Can't delete ${i}: ${[...have, ...waiting.map(w => 'it is on a ' + w + ' waiting in Requests')].join('; ')}. Untick "In use" to hide it${have.length ? ', or move or book out the stock first' : ''}.`, 9000);
+    if (!confirmBox(`Delete ${i}?\n\nIt comes off the item list everywhere. Past bookings and reports keep the name. You can add it again with "Add item".`)) return;
+    try {
+      await setDoc(doc(db, 'config', 'items'), { i: { [i]: deleteField() } }, { merge: true });
+      toast(`Deleted ${i}`);
+    } catch (err) { toast('Not deleted: ' + err.message, 6000); }
+  });
   $('#itRows', el).addEventListener('change', e => { const i = e.target.dataset.item; if (i) setDoc(doc(db, 'config', 'items'), { i: { [i]: { a: e.target.checked } } }, { merge: true }).then(() => toast('Saved')); });
   drawMergeList(el);
   itemPicker($('#mgFrom', el), { strict: () => true }); itemPicker($('#mgInto', el), { strict: () => true });
@@ -959,9 +971,10 @@ function renderReport() {
   const el = $('#tab-report');
   if (!S.ready.locs) return;
   if (viewOf() === 'mgr') return renderMgrReport(el);
-  el.innerHTML = `<h2>Report</h2><div id="sgOut"></div><h2 style="margin-top:28px">Food bank report</h2><div id="rpWrap"></div>`;
+  el.innerHTML = `<h2>Report</h2><div id="sgOut"></div><h2 style="margin-top:28px">Food bank report</h2><div id="rpWrap"></div><h2 style="margin-top:28px">Donations by donor</h2><div id="dnWrap"></div>`;
   renderSimonGraphs();
   renderDetailReport($('#rpWrap'));
+  renderDonorReport($('#dnWrap'));
 }
 function renderDetailReport(el) {
   const banks = locNames().filter(n => S.locs[n].kind !== 'donation');
@@ -1084,11 +1097,73 @@ async function drawMgrReport() {
 
 // Simon: everything – storage in and out, food banks in (together and each one) and given out
 const SG = { mode: 'month', year: new Date().getFullYear(), mv: null, at: 0 };
+// every booking that counts in reports (not undone, not a merge), loaded once and kept for 10 minutes
+async function allMoves(reload) {
+  if (reload || !SG.mv || Date.now() - SG.at > 10 * 60000) { const qs = await getDocs(collection(db, 'movements')); SG.mv = qs.docs.map(d => d.data()).filter(m => !m.voided && !m.merge && m.date); SG.at = Date.now(); }
+  return SG.mv;
+}
+// ---------- v1.10: donations by donor ----------
+// Who gave what: donations booked in (Book In "Donation" and the spreadsheet's donation bookings) and the food banks'
+// direct donation lists Simon accepted. The donor is the "From" name; for old bookings it is read from the note.
+const NO_DONOR = '(no donor given)';
+function donorOf(m) {
+  if (m.from && m.from !== 'Donation') return m.from;
+  // "Donation - Tesco", "Community Donation Ben Collins", "Doantion", "Birthday Fundraiser" (an event), "Donation - direct to X from Y"
+  const n = String(m.note || '').replace(/^\s*(?:community\s+)?(?:donation|doantion)\b\s*-?\s*/i, '').trim();
+  const d = n.match(/^direct to .+? from (.+)$/i); if (d) return d[1].trim();
+  return /^direct(?: to |$)/i.test(n) || !n ? NO_DONOR : n;
+}
+function donorReport(mvs, from, to) {
+  const D = {};
+  for (const m of mvs) {
+    if (m.type !== 'donation' || m.voided || m.merge || !(m.date >= from) || m.date > to) continue;
+    const lines = (m.lines || []).filter(x => x.q > 0); if (!lines.length) continue;
+    const name = donorOf(m), d = (D[name] ||= { name, n: 0, units: 0, first: m.date, last: m.date, items: {}, direct: {} });
+    d.n++; if (m.date < d.first) d.first = m.date; if (m.date > d.last) d.last = m.date;
+    const direct = S.locs[lines[0].l]?.kind === 'donation' ? (String(m.note).match(/direct to (.+?)(?: from |$)/i)?.[1] || 'a food bank') : '';
+    for (const x of lines) { const i = canon(x.i); d.units += x.q; d.items[i] = (d.items[i] || 0) + x.q; }
+    if (direct) d.direct[direct] = (d.direct[direct] || 0) + lines.reduce((a, x) => a + x.q, 0);
+  }
+  return Object.values(D).sort((a, b) => b.units - a.units || a.name.localeCompare(b.name));
+}
+const DR = { from: '', to: '', who: '' };
+function renderDonorReport(el) {
+  if (!DR.to) { DR.to = today(); DR.from = `${new Date().getFullYear()}-01-01`; }
+  el.innerHTML = `<p class="muted">Who has donated what, and how many – donations booked in and the food banks' direct donation lists. Tap a donor to see the items. Names are as typed in "From", so different spellings show as different donors.</p>
+    <div class="card"><div class="row">
+      <label>From<input type="date" id="drFrom" value="${DR.from}"></label><label>To<input type="date" id="drTo" value="${DR.to}"></label>
+      <label>Donor<select id="drWho"><option value="">All donors</option></select></label>
+      <button class="btn" id="drRun">Show donations</button></div></div>
+    <div id="drOut" class="rep"></div>`;
+  $('#drRun', el).onclick = () => { DR.from = $('#drFrom', el).value; DR.to = $('#drTo', el).value; DR.who = $('#drWho', el).value; runDonorReport(el); };
+  $('#drWho', el).onchange = () => { DR.who = $('#drWho', el).value; runDonorReport(el); };
+  runDonorReport(el);
+}
+async function runDonorReport(el) {
+  const out = $('#drOut', el); if (!out) return;
+  if (!DR.from || !DR.to || DR.from > DR.to) { out.innerHTML = '<p class="warn">Choose a From date before the To date.</p>'; return; }
+  out.innerHTML = '<p class="muted">Working it out…</p>';
+  let mvs; try { mvs = await allMoves(); } catch (e) { out.innerHTML = `<p class="warn">Could not load the bookings: ${esc(e.message)}</p>`; return; }
+  const all = donorReport(mvs, DR.from, DR.to), sel = $('#drWho', el);
+  // the donor list: everyone who gave in these dates, plus the one picked
+  const names = [...new Set([...all.map(d => d.name), ...(DR.who ? [DR.who] : [])])].sort((a, b) => a.localeCompare(b));
+  sel.innerHTML = `<option value="">All donors (${all.length})</option>` + names.map(n => `<option ${n === DR.who ? 'selected' : ''}>${esc(n)}</option>`).join('');
+  const list = DR.who ? all.filter(d => d.name === DR.who) : all;
+  const T = list.reduce((a, d) => ({ n: a.n + d.n, units: a.units + d.units }), { n: 0, units: 0 });
+  if (!list.length) { out.innerHTML = `<p class="muted">No donations${DR.who ? ' from ' + esc(DR.who) : ''} between ${fmtDate(DR.from)} and ${fmtDate(DR.to)}.</p>`; return; }
+  out.innerHTML = `<div class="stats"><div class="stat"><b>${list.length}</b><span>donor${list.length === 1 ? '' : 's'}</span></div><div class="stat"><b>${T.n}</b><span>donations</span></div><div class="stat"><b>${num(T.units)}</b><span>units</span></div></div>
+    <div class="tablewrap"><table class="donors"><thead><tr><th>Donor</th><th class="num">Donations</th><th class="num">Units</th><th>Last</th></tr></thead><tbody>
+    ${list.map((d, k) => `<tr class="dn" data-k="${k}"><td><b>${esc(d.name)}</b>${Object.keys(d.direct).length ? ` <span class="small muted">(direct to ${esc(Object.keys(d.direct).join(', '))})</span>` : ''}</td><td class="num">${d.n}</td><td class="num">${num(d.units)}</td><td>${fmtDate(d.last)}</td></tr>
+      <tr class="dnItems" data-k="${k}" ${list.length === 1 ? '' : 'hidden'}><td colspan="4"><table class="sub"><tbody>${Object.entries(d.items).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([i, q]) => `<tr><td>${esc(i)}</td><td class="num">${num(q)}</td></tr>`).join('')}</tbody></table>
+        <p class="small muted">${d.n} donation${d.n === 1 ? '' : 's'}, ${d.first === d.last ? fmtDate(d.first) : fmtDate(d.first) + ' to ' + fmtDate(d.last)}</p></td></tr>`).join('')}
+    </tbody><tfoot><tr><td>Total</td><td class="num">${T.n}</td><td class="num">${num(T.units)}</td><td></td></tr></tfoot></table></div>`;
+  out.querySelector('tbody').onclick = e => { const tr = e.target.closest('tr.dn'); if (!tr) return; const sub = out.querySelector(`tr.dnItems[data-k="${tr.dataset.k}"]`); sub.hidden = !sub.hidden; tr.classList.toggle('open', !sub.hidden); };
+}
 async function renderSimonGraphs(reload) {
   const box = $('#sgOut'); if (!box) return;
   if (reload || !SG.mv || Date.now() - SG.at > 10 * 60000) {
     box.innerHTML = '<p class="muted">Loading all bookings…</p>';
-    try { const qs = await getDocs(collection(db, 'movements')); SG.mv = qs.docs.map(d => d.data()).filter(m => !m.voided && !m.merge && m.date); SG.at = Date.now(); }
+    try { await allMoves(true); }
     catch (e) { box.innerHTML = `<p class="warn">Could not load the bookings: ${esc(e.message)}</p>`; return; }
     if ($('#sgOut') !== box) return;
   }
@@ -1102,7 +1177,7 @@ async function renderSimonGraphs(reload) {
   box.innerHTML = `<div class="card"><div class="row">${modeBtns(SG.mode, [['week', 'Weekly'], ['month', 'Monthly'], ['year', 'Yearly']])}
       ${SG.mode !== 'year' ? `<label style="flex:0 0 auto">Year<select id="sgYear">${years.map(y => `<option ${y === SG.year ? 'selected' : ''}>${y}</option>`).join('')}</select></label>` : ''}
       <button class="btn g sm" id="sgRe">Refresh</button> <button class="btn sm" id="sgXl">Export to Excel</button></div>
-      <p class="small muted" style="margin:8px 0 0">${SG_NOTE} The data starts in ${first}${first === 2024 ? ' (April)' : ''}. <b>Export to Excel</b> saves every graph (weekly, monthly and yearly, every year) with its figures, and the food bank report for every place, from the start to today.</p></div>
+      <p class="small muted" style="margin:8px 0 0">${SG_NOTE} The data starts in ${first}${first === 2024 ? ' (April)' : ''}. <b>Export to Excel</b> saves every graph (weekly, monthly and yearly, every year) with its figures, the food bank report for every place, and who donated what – from the start to today.</p></div>
     ${barChart({ title: `Main Storage – in and out, ${per}`, labels: P.labels, series: [{ name: 'In', cls: 'in', values: r(A.mainIn) }, { name: 'Out', cls: 'out', values: r(A.mainOut) }], tableOpen: open })}
     ${others.length ? barChart({ title: `${others.join(', ')} – in and out, ${per}`, labels: P.labels, series: [{ name: 'In', cls: 'in', values: r(A.stIn) }, { name: 'Out', cls: 'out', values: r(A.stOut) }], tableOpen: open }) : ''}
     ${barChart({ title: `All food banks – items booked in, ${per}`, labels: P.labels, series: [{ name: 'Booked in', cls: 'in', values: r(A.bankIn) }], tableOpen: open })}
@@ -1146,8 +1221,7 @@ async function exportExcel(btn) {
   const was = btn?.textContent;
   try {
     if (btn) { btn.disabled = true; btn.textContent = 'Making the file…'; }
-    if (!SG.mv || Date.now() - SG.at > 10 * 60000) { const qs = await getDocs(collection(db, 'movements')); SG.mv = qs.docs.map(d => d.data()).filter(m => !m.voided && !m.merge && m.date); SG.at = Date.now(); }
-    const wb = buildExcel(SG.mv, new Date());
+    const wb = buildExcel(await allMoves(), new Date());
     const blob = new Blob([wb.save('Food Bank Manager report')], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `Food Bank report ${today()}.xlsx` });
     document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000);
@@ -1206,6 +1280,20 @@ function buildExcel(mvs, when) {
     if (!items.length) sh.set(hr + 1, 0, 'Nothing booked here in this period.', 'note');
     else sh.row(hr + 1 + items.length, 0, ['Total', ...cols.map(c => num(T[c])), Math.round(nowTot)], ['tot', 'totn', 'totn', 'totn', 'totn', 'totn', 'totn', 'totn']);
   }
+  // v1.10: who donated what – all dates
+  const donors = donorReport(mvs, firstDate, to);
+  const ds = wb.sheet('Donors', [36, 12, 12, 13, 13, 40]);
+  list.push([ds.name, `Every donor, ${fmtDate(firstDate)} to ${fmtDate(to)}: number of donations, units, first and last date (donations booked in and direct donation lists).`]);
+  ds.set(0, 0, 'Donations by donor', 'title'); ds.set(1, 0, `${fmtDate(firstDate)} to ${fmtDate(to)} · units · names as typed, so different spellings are different donors`, 'note');
+  ds.row(3, 0, ['Donor', 'Donations', 'Units', 'First', 'Last', 'Direct to food banks'], ['th', 'thn', 'thn', 'th', 'th', 'th']);
+  donors.forEach((d, k) => ds.row(4 + k, 0, [d.name, d.n, num(d.units), d.first, d.last, Object.entries(d.direct).map(([b, q]) => `${b} ${num(q)}`).join(', ')], ['', 'n', 'n', '', '', '']));
+  ds.row(4 + donors.length, 0, ['Total', donors.reduce((a, d) => a + d.n, 0), num(donors.reduce((a, d) => a + d.units, 0))], ['tot', 'totn', 'totn']);
+  const di = wb.sheet('Donors – items', [36, 34, 12]);
+  list.push([di.name, 'Every donor and every item they gave, with the quantity (same donations as the Donors sheet).']);
+  di.set(0, 0, 'Donations by donor – items', 'title'); di.set(1, 0, `${fmtDate(firstDate)} to ${fmtDate(to)} · units`, 'note');
+  di.row(3, 0, ['Donor', 'Item', 'Quantity'], ['th', 'th', 'thn']);
+  let dr = 4; for (const d of donors) for (const [i, q] of Object.entries(d.items).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))) di.row(dr++, 0, [d.name, i, num(q)], ['', '', 'n']);
+  di.row(dr, 0, ['Total', '', num(donors.reduce((a, d) => a + d.units, 0))], ['tot', 'tot', 'totn']);
   // contents page: what is in the file and how it is counted
   contents.set(0, 0, "Food Bank Manager – report", 'title');
   contents.set(1, 0, `Friends of Isaac's Food Bank · exported ${stamp}${S.name ? ' by ' + S.name : ''} · app v${APP_VERSION}`, 'note');

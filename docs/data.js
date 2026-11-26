@@ -1,8 +1,12 @@
 // Food Bank Manager – Friends of Isaac's Food Bank
 // Version and fixed data. Bump APP_VERSION and add to VERSION_HISTORY every release.
-export const APP_VERSION = '1.9';
+export const APP_VERSION = '1.10';
 
 export const VERSION_HISTORY = [
+  ['1.10', '26 Nov 2026', [
+    'Report (Simon): Donations by donor – who donated what and how many, for any dates, all donors or one; also in Export to Excel (Donors and Donors – items sheets)',
+    'Setup › Items: Delete button – only for an item with no stock anywhere that is not on a request waiting for Simon',
+  ]],
   ['1.9', '26 Nov 2026', [
     'Simon: microphone on Book In, Book Out and Transfer – say the items ("10 beans, 6 pasta"); items it is sure of go straight on, the rest are highlighted to tick ✓ or change before booking',
   ]],
